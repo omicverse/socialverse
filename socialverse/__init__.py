@@ -58,6 +58,10 @@ def _load_submodules() -> None:
 
 _load_submodules()
 
+# the OmicOS-facing query surface (sv.utils.registry_lookup / registry_summary) —
+# imported after the analysis modules so the registry is fully populated.
+from . import utils  # noqa: E402,F401
+
 # expose the phase namespaces if they imported
 for _n in _SUBMODULES:
     try:
@@ -70,5 +74,5 @@ for _n in _SUBMODULES:
 __all__ = [
     "registry", "register", "StudyState", "SLOTS", "VALID_SLOTS",
     "FunctionRegistry", "RegistryError", "find_function", "get_prerequisites",
-    "list_functions", "export_registry", "__version__",
+    "list_functions", "export_registry", "utils", "__version__",
 ]
