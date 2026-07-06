@@ -5,3 +5,13 @@ build/
 dist/
 .pytest_cache/
 .DS_Store
+
+# notebook run side-outputs (regenerated on execute; already embedded in .ipynb)
+notebooks/*.docx
+notebooks/*.tei.xml
+notebooks/registry_manifest.json
+notebooks/evidence_chain_provenance.json
+# stray root-level outputs from ad-hoc script runs
+/fig_*.png
+/*.tei.xml
+/*.docx
