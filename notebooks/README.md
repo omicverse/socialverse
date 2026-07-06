@@ -44,10 +44,23 @@ jupyter lab notebooks/            # 逐格运行;或直接看已执行的 .ipynb
 | **09** | [文献引证:检索 → 三库核验(揪幻觉引用) → 稿件审计](09_literature_citation.ipynb) | search → 核验(标 chimeric/suspicious)→ 风格化 → claim-evidence 审计 | Zotero + CrossRef/OpenAlex |
 | **10** | [研究闭环:可复核小研究 + 证据链导出](10_full_study_evidence_chain.ipynb) | 治理闸门 → 注册表排链 → 因果 → provenance 账本 → registry manifest 导出 | (socialverse 的差异化收束) |
 
+## Part 5 — 补齐的定量方法(曾经的缺口,现全部真实实现)
+
+每本用真 DGP 玩具数据端到端跑通并**复原已知参数**;近似处诚实标注(ERGM=MPLE、SAOM=描述性)。
+
+| # | Notebook | 方法 | 复原 | 对标现实工具 |
+|---|---|---|---|---|
+| **11** | [准实验:RDD + 合成控制](11_quasi_experiment.ipynb) | 断点回归(局部线性)· 合成控制(SLSQP 权重) | RDD 跳 ≈3.0 | rdrobust / gsynth·augsynth |
+| **12** | [心理测量:CFA → SEM → IRT](12_psychometrics.ipynb) | 验证性因子 · 结构方程 · 2PL 项目反应 | CFI 0.95/RMSEA 0.04 | lavaan / mirt / semopy |
+| **13** | [多层与生存:HLM + Cox](13_multilevel_survival.ipynb) | 混合效应(随机截距/斜率)· Cox PH + KM | 斜率≈2.0,log-HR≈0.8 | lme4·brms / survival |
+| **14** | [空间分析:Moran/LISA + SAR](14_spatial_analysis.ipynb) | 全局/局部空间自相关 · 空间滞后回归 + 效应分解 | ρ≈0.5 | PySAL / spdep·spatialreg |
+| **15** | [fsQCA + 人口学](15_qca_demography.ipynb) | 模糊集真值表最小化 · 生命表 · Kitagawa 分解 | 解="C+A*B" 精确 | QCA·SetMethods / demography |
+| **16** | [网络推断 + 文体计量](16_networks_stylometry.ipynb) | ERGM(MPLE)· SAOM 共演化 · Burrows's Delta | mutual 系数>0,按作者聚类 | ergm·statnet / RSiena / stylo |
+
 ---
 
 ## 覆盖与延伸
 
-- 这 10 本覆盖 registry 现有**全部 34 个函数**(见 [../docs/CONTRACT_CARDS.md](../docs/CONTRACT_CARDS.md) 逐一契约卡)。
-- **明确标注的缺口**(现实有权威包、socialverse 待补,见 [../docs/LANDSCAPE.md](../docs/LANDSCAPE.md) 第 4 节):SEM/CFA · IRT · RDD · 合成控制 · 多层 HLM · 事件史 · 空间 · ERGM/SAOM · QCA。补齐后再各出一本(如「准实验三件套 IV+RDD+合成控制」「心理测量 EFA→SEM→IRT」「多层与生存」「空间 Moran+SAR」「质性 QCA 组态」)。
+- 这 **16 本** notebook 覆盖 registry **全部 54 个函数**(见 [../docs/CONTRACT_CARDS.md](../docs/CONTRACT_CARDS.md) 逐一契约卡)。
+- 曾经的缺口(SEM/CFA · IRT · RDD · 合成控制 · 多层 HLM · 事件史 · 空间 · ERGM/SAOM · QCA · 人口学 · 文体计量)**现已全部真实实现**(Part 5);诚实标注的近似:ERGM=MPLE(非 MCMC-MLE)、SAOM=描述性简化、SEM latent 不可用时退化 path analysis。
 - 设计依据:社科生态「点状繁荣、彼此不互通」,socialverse 用**显式注册表契约层**补 R 的「隐式契约(formula+S3/S4+broom)」在 Python 侧的缺失。详见 [LANDSCAPE.md](../docs/LANDSCAPE.md)。
