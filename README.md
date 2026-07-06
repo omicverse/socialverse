@@ -113,21 +113,44 @@ Governance is a first-class axis — in social science, ethics/licence/PII/AI-di
 gate almost every analysis, so they are registered functions with their own contracts,
 not an afterthought.
 
-## Built-in analysis chains
+## Method coverage (54 registered functions)
 
-Derived automatically from `requires ↔ produces`:
+Each family is a real, tested implementation (pure numpy/scipy/statsmodels, with the
+champion backend lazy-imported when present) — see [docs/CONTRACT_CARDS.md](docs/CONTRACT_CARDS.md).
+
+- **causal / quasi-experimental**: TWFE-DiD, event-study, **RDD** (local-linear), **synthetic control**
+- **econometrics**: 8-step replication pipeline (emits reproducible R/Stata scripts)
+- **complex survey**: design-based weighted estimation (strata/PSU/weights)
+- **psychometrics**: **CFA**, **SEM** (path fallback), **IRT** (2PL) — reliability, fit indices
+- **longitudinal**: **multilevel/HLM** (MixedLM), **survival/event-history** (Cox PH, KM)
+- **spatial**: **Moran's I / LISA**, **spatial-lag (SAR)** regression with impacts
+- **networks**: descriptives, **ERGM** (MPLE), **SAOM** co-evolution (descriptive)
+- **set-theoretic**: **fsQCA** (truth-table + Quine-McCluskey minimization)
+- **demography**: **life tables**, **Kitagawa / Oaxaca decomposition**
+- **text / DH**: corpus building, topic coding, OCR→TEI, philology collation, **stylometry (Burrows's Delta)**
+- **qualitative**: reflexive thematic analysis, quote-traceability, theory lenses
+- **governance / literature**: ethics/licence/AI-disclosure gates · search, citation-verify, review
+
+### Built-in analysis chains (auto-derived from `requires ↔ produces`)
 
 - **causal**: `ingest → declare_design → parallel_trends → did → event_study → forest`
-- **complex survey**: `ingest → declare_design → design_survey → survey_estimate → survey_dist`
+- **quasi**: `ingest → rdd → rdd_plot` · `synthetic_control → synth_path`
+- **survey**: `ingest → declare_design → design_survey → survey_estimate → survey_dist`
+- **psychometrics**: `ingest → cfa → sem` · `irt`
+- **longitudinal**: `ingest → multilevel` · `survival → km_curve`
+- **spatial**: `ingest → spatial_autocorr → spatial_regression → moran_scatter`
 - **qualitative**: `build_corpus → redact_pii → code_themes → trace_quotes → reflexive_memo → theme_map`
-- **text / philology**: `ocr_tei → build_corpus → philology_collate → tei_encode`
+- **text / philology**: `ocr_tei → build_corpus → philology_collate → tei_encode` · `stylometry → dendrogram`
+- **networks**: `build_network → ergm` · `saom`
+- **QCA / demography**: `qca` · `life_table → decomposition`
 - **literature / citation**: `search_free → zotero_bridge → citation_manage → verify_citations → manuscript_review`
 - **governance (cross-cutting)**: `data_use_check · ethics_check · redact_pii · ai_use_disclosure`
 
 ## How it maps to OmicOS
 
 This package is the concrete instantiation of the `humanities_social` domain's
-registry table: its ~30 registered functions cover all 26 `humanities_social` skills.
+registry table: its 54 registered functions cover all 26 `humanities_social` skills
+plus the quantitative method families a social-science审稿 pipeline needs.
 An OmicOS agent points its `registry_lookup` at `sv.registry` and gets the same
 grounding it gets from `ov.registry` in the bio domain — query, plan, chain, auto-fix.
 

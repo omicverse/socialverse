@@ -1,6 +1,6 @@
 # socialverse 契约卡 (Contract Cards)
 
-registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Python/R 冠军包。
+registry 全部 **54 个函数**的依赖契约,外加每个对标的现实 Python/R 冠军包。
 自动从 `sv.registry.manifest()` 生成 —— 这既是文档,也是注册表的人类可读视图(对标 R 的 CRAN Task Views「策划目录」思路)。
 
 > 读法:`requires → produces` 是机器可读的依赖契约(槽位见 [StudyState 词汇表](../README.md));`auto_fix` = 缺前置时的策略;「对标」列指出同类功能在现实生态里的权威实现。
@@ -24,6 +24,13 @@ registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Pyth
 | **sv.tl.event_study** | plus | `design[panel_id,time,treatment,first_treated]` · `variables[outcome]` → `models[event_study]` | `escalate` | pyfixest / fixest::sunab / did2s |
 | **sv.tl.parallel_trends** | plus | `design[panel_id,time,treatment,first_treated]` · `variables[outcome]` · `estimand[target]` → `diagnostics[pretrend]` · `identification[parallel_trends]` | `escalate` | linearmodels / pyfixest / fixest / did |
 
+## 准实验 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.rdd** | plus | `sources[datasets]` · `variables[outcome]` · `estimand[target]` → `models[rdd]` · `diagnostics[bandwidth]` | `escalate` | statsmodels local-linear / rdrobust |
+| **sv.tl.synthetic_control** | pro | `sources[datasets]` · `design[treatment,time]` · `variables[outcome]` · `estimand[target]` → `models[synth]` · `diagnostics[pre_fit]` | `escalate` | scipy SLSQP / gsynth / augsynth / Synth |
+
 ## 复杂抽样 (sv.tl)
 
 | 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
@@ -36,6 +43,41 @@ registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Pyth
 | 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
 |---|---|---|---|---|
 | **sv.tl.replicate** | pro | `sources[datasets]` · `design[treatment]` · `estimand[target]` · `identification[strategy]` → `variables[controls]` · `models[twfe]` · `diagnostics[robustness,balance]` · `artifacts[scripts,tables]` | 先跑 did · `escalate` | pyfixest + statsmodels / fixest (+ targets/Quarto) |
+
+## 心理测量 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.cfa** | plus | `sources[datasets]` → `models[cfa]` · `diagnostics[fit_indices]` | `escalate` | statsmodels.Factor / semopy / lavaan / psych |
+| **sv.tl.irt** | plus | `sources[datasets]` → `models[irt]` · `diagnostics[item_info]` | `escalate` | scipy (girth) / mirt / TAM |
+| **sv.tl.sem** | pro | `sources[datasets]` → `models[sem]` · `diagnostics[fit_indices]` | `escalate` | semopy / lavaan |
+
+## 多层/生存 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.multilevel** | plus | `sources[datasets]` · `variables[outcome]` → `models[mixedlm]` · `diagnostics[variance_components]` | `escalate` | statsmodels.MixedLM / lme4 / brms |
+| **sv.tl.survival** | plus | `sources[datasets]` · `variables[outcome]` → `models[cox,km]` · `diagnostics[ph_test]` | `escalate` | statsmodels.PHReg (Cox) / survival |
+
+## 空间 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.spatial_autocorr** | plus | `sources[datasets]` → `diagnostics[moran]` · `models[lisa]` | `escalate` | numpy / PySAL esda / spdep |
+| **sv.tl.spatial_regression** | pro | `sources[datasets]` · `variables[outcome]` → `models[sar]` · `diagnostics[spatial]` | `escalate` | numpy ML / spreg / spatialreg |
+
+## 定性比较 QCA (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.qca** | plus | `sources[datasets]` · `variables[outcome]` → `models[qca]` · `diagnostics[consistency_coverage]` | `escalate` | (pure python) / QCA / SetMethods |
+
+## 人口学 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.decomposition** | pro | `sources[datasets]` → `models[decomposition]` · `diagnostics[components]` | `escalate` | numpy / statsmodels / demography / oaxaca |
+| **sv.tl.life_table** | plus | `sources[datasets]` → `models[life_table]` | `none` | numpy / demography / MortalityLaws |
 
 ## 质性方法 (sv.tl)
 
@@ -65,6 +107,14 @@ registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Pyth
 | 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
 |---|---|---|---|---|
 | **sv.tl.build_network** | plus | `sources[datasets]` → `models[network]` · `diagnostics[coverage]` | `none` | networkx / igraph / igraph / statnet |
+| **sv.tl.ergm** | pro | `sources[datasets]` → `models[ergm]` · `diagnostics[gof]` | `escalate` | statsmodels MPLE / ergm / statnet |
+| **sv.tl.saom** | pro | `sources[datasets]` → `models[saom]` · `diagnostics[coevolution]` | `escalate` | numpy (descriptive) / RSiena |
+
+## 文体计量 (sv.tl)
+
+| 函数 | tier | requires → produces | 前置/auto_fix | 对标 Py / R |
+|---|---|---|---|---|
+| **sv.tl.stylometry** | plus | `corpus[documents]` → `models[stylometry]` · `artifacts[figures]` | `escalate` | scipy hierarchical / stylo |
 
 ## 绘图 (sv.pl)
 
@@ -75,6 +125,11 @@ registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Pyth
 | **sv.pl.manuscript_docx** | community | `sources[datasets]` → `artifacts[docx,pdf]` · `diagnostics[coverage]` | `auto` | python-docx + pandoc / officer / rmarkdown |
 | **sv.pl.survey_dist** | community | `models[weighted_reg]` → `artifacts[figures]` | `escalate` | matplotlib / seaborn / ggplot2 / survey |
 | **sv.pl.theme_map** | community | `codes[theme_map]` → `artifacts[figures]` | `escalate` | networkx + matplotlib / igraph / ggraph |
+| **sv.pl.dendrogram** | community | `models[stylometry]` → `artifacts[figures]` | `escalate` | scipy + matplotlib / stylo / ggdendro |
+| **sv.pl.km_curve** | community | `models[km]` → `artifacts[figures]` | `escalate` | matplotlib / survminer |
+| **sv.pl.moran_scatter** | community | `diagnostics[moran]` → `artifacts[figures]` | `escalate` | matplotlib / spdep::moran.plot |
+| **sv.pl.rdd_plot** | community | `models[rdd]` → `artifacts[figures]` | `escalate` | matplotlib / rdrobust::rdplot |
+| **sv.pl.synth_path** | community | `models[synth]` → `artifacts[figures]` | `escalate` | matplotlib / gsynth::plot |
 
 ## 治理 (sv.gov)
 
@@ -95,6 +150,7 @@ registry 全部 **34 个函数**的依赖契约,外加每个对标的现实 Pyth
 | **sv.lit.zotero_bridge** | plus | `sources[bib]` → `sources[bib]` | `auto` | pyzotero (+ Zotero MCP) / (none) |
 | **sv.lit.verify_citations** | community | `sources[bib]` → `evidence[verified_bib]` | `escalate` | (none — CrossRef/OpenAlex) / (none) |
 
+
 ---
 
-缺口(现实有权威包、socialverse 待补,见 [LANDSCAPE.md](LANDSCAPE.md) 第 4 节):**SEM/CFA**(lavaan/semopy)· **IRT**(mirt)· **RDD**(rdrobust)· **合成控制**(gsynth)· **多层 HLM**(lme4)· **事件史**(survival)· **空间**(spdep/PySAL)· **ERGM/SAOM**(ergm/RSiena,Python 原生空白=高护城河)· **QCA**(fsQCA)· **人口学分解**· **文体计量 Delta**(stylo)。
+**曾经的缺口现已全部实现**(真实计算 + 懒加载 champion 后端 fallback,见上表 quasi / psychometrics / longitudinal / spatial / setmethods / demography / stylometry / net 各类):RDD · 合成控制 · CFA/SEM · IRT · 多层 HLM · 事件史/Cox · 空间自相关/SAR · fsQCA · 生命表/Kitagawa 分解 · 文体计量 Delta · ERGM。诚实标注的近似:**ERGM = MPLE**(非 MCMC-MLE)· **SAOM = 描述性简化版**(非基于模拟的完整估计)· **SEM latent 不可用时退化为 path analysis**。全部经 `tests/test_gap_methods.py` 验证能复原已知 DGP 参数。
