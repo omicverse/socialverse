@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "socialverse"
+version = "0.1.0"
+description = "A structured, dependency-annotated function registry for the social sciences and humanities — the omicverse registry mechanism, ported off AnnData onto a light StudyState vocabulary."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "CC-BY-4.0" }
+authors = [{ name = "OmicOS / socialverse contributors" }]
+keywords = ["social-science", "computational-social-science", "digital-humanities",
+            "function-registry", "reproducibility", "agent", "causal-inference"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
+
+# Hard deps are deliberately minimal — the whole point is a light registry, not a
+# heavy monolith. Everything domain-specific is federated and lazy-imported.
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+# federated analysis backends — installed only for the chains you use (lazy-imported)
+stats = ["statsmodels>=0.13", "scipy>=1.9"]
+causal = ["linearmodels>=4.27", "pyfixest>=0.18"]
+survey = ["samplics>=0.3", "pingouin>=0.5", "factor_analyzer>=0.4"]
+text = ["spacy>=3.4", "lxml>=4.9"]
+net = ["networkx>=2.8"]
+figure = ["matplotlib>=3.5", "seaborn>=0.12"]
+lit = ["requests>=2.28", "bibtexparser>=1.4"]
+docx = ["python-docx>=0.8"]
+# convenience: everything needed to run the built-in demos / test-suite
+full = [
+    "statsmodels>=0.13", "scipy>=1.9", "networkx>=2.8", "matplotlib>=3.5",
+]
+dev = ["pytest>=7.0", "statsmodels>=0.13", "scipy>=1.9", "networkx>=2.8", "matplotlib>=3.5"]
+
+[project.scripts]
+socialverse = "socialverse._cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["socialverse*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
