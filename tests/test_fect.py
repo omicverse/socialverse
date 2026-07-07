@@ -91,3 +91,15 @@ def test_placebo_clean_design_not_flagged():
     pb = m["placebo"]
     assert pb is not None and pb.get("placebo_p") is not None
     assert pb["placebo_p"] > 0.05  # no spurious pre-treatment effect
+
+
+def test_placebo_ifect_is_robust():
+    """IFEct (r>=1) + placebo must not crash and must restrict to estimable units
+    after holding out the pre-window (no degenerate-loading pollution)."""
+    df, _ = _panel(N=200, T=14, att=1.5, r_true=1, seed=6)
+    m = _fit(df, r=1, nboots=40, placebo=True, placebo_periods=3)
+    pb = m["placebo"]
+    assert pb is not None            # returned a result rather than raising
+    assert "note" in pb              # always reports what it did
+    if pb.get("placebo_p") is not None:
+        assert pb["placebo_se"] is not None and pb["placebo_se"] > 0

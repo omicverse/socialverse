@@ -375,8 +375,7 @@ def _placebo_test(Y, D, E, r, S, nboots, seed):
     N, T = Y.shape
     Dm = D.copy()
     Em = E.copy()
-    # relative period per unit
-    treated_units = [(D[i] > 0.5).any() for i in range(N)]
+    treated_units = (D > 0.5).any(axis=1)
     placebo_mask = np.zeros((N, T), dtype=bool)
     for i in range(N):
         if not treated_units[i]:
@@ -389,32 +388,47 @@ def _placebo_test(Y, D, E, r, S, nboots, seed):
     if placebo_mask.sum() == 0:
         return {"note": "无可用的处理前窗口,placebo 未运行"}
 
-    def _fit_att(Yx, Dx, Ex):
-        # window is held out via Ex (Em); genuinely treated cells stay excluded by D>0
-        Yh, _ = _fect_fit(Yx, Dx, Ex, r=r)
-        return Yh
+    # Holding out the window can push a unit below the estimable threshold (esp.
+    # IFEct r>=1, where too few untreated cells make the loading degenerate). Restrict
+    # the placebo to units that stay estimable so we never impute from garbage.
+    keep2 = _keep_estimable(Dm, Em, r)
+    n_drop = int((placebo_mask.any(1) & ~keep2).sum())
+    Y2, Dm2, Em2, pmask = Y[keep2], Dm[keep2], Em[keep2], placebo_mask[keep2]
+    if pmask.sum() == 0:
+        return {"note": "挖窗后无可估计的处理前单位,placebo 未运行"}
+    N2 = Y2.shape[0]
 
-    Yh = _fit_att(Y, Dm, Em)
-    att_p = float((Y - Yh)[placebo_mask].mean())
+    def _fit(Yx, Dx, Ex):
+        return _fect_fit(Yx, Dx, Ex, r=r)[0]
+
+    Yh = _fit(Y2, Dm2, Em2)
+    att_p = float((Y2 - Yh)[pmask].mean())
 
     rng = np.random.default_rng(seed)
     pb = []
     for _ in range(nboots):
-        idx = rng.integers(0, N, size=N)
-        pm = placebo_mask[idx]
+        idx = rng.integers(0, N2, size=N2)
+        pm = pmask[idx]
         if pm.sum() == 0:
             continue
-        Yh_b = _fit_att(Y[idx], Dm[idx], Em[idx])
-        pb.append(float((Y[idx] - Yh_b)[pm].mean()))
+        try:  # a degenerate resample must skip, not crash the whole test
+            Yh_b = _fit(Y2[idx], Dm2[idx], Em2[idx])
+            pb.append(float((Y2[idx] - Yh_b)[pm].mean()))
+        except Exception:
+            continue
     pb = np.array(pb)
-    se_p = float(np.std(pb, ddof=1)) if pb.size > 1 else None
+    ok = pb.size >= max(30, nboots // 4)
+    se_p = float(np.std(pb, ddof=1)) if ok else None
     p = None
     if se_p and se_p > 0:
         from scipy import stats
         p = float(2 * (1 - stats.norm.cdf(abs(att_p / se_p))))
+    note = "DIM 双侧 z 检验;p 大 = 未见处理前效应,支持识别假设"
+    if n_drop:
+        note += f"(挖窗后丢弃 {n_drop} 个不可估计单位)"
     return {"placebo_att": att_p, "placebo_se": se_p, "placebo_p": p,
-            "window_periods": S, "n_placebo_cells": int(placebo_mask.sum()),
-            "note": "DIM 双侧 z 检验;p 大 = 未见处理前效应,支持识别假设"}
+            "window_periods": S, "n_placebo_cells": int(pmask.sum()),
+            "n_boots": int(pb.size), "note": note}
 
 
 __all__ = ["fect"]
