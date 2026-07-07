@@ -350,25 +350,37 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
     if not covariates:
         return _empty("没有可用协变量")
 
-    # keep the KM grouping column even when it is not a Cox covariate
+    # keep the KM grouping column (and, for time-varying Cox, the interval-start
+    # column) even when they are not Cox covariates.
     _grp = kwargs.get("group")
-    extra = [_grp] if (_grp and _grp in df.columns
-                       and _grp not in ([time_col, event_col] + covariates)) else []
+    start_col = kwargs.get("start") or kwargs.get("entry")   # counting-process (start, stop]
+    extra = [c for c in [_grp, start_col]
+             if c and c in df.columns and c not in ([time_col, event_col] + covariates)]
     work = df[[time_col, event_col] + covariates + extra].copy().dropna()
-    work = work[work[time_col] > 0]
+    time_varying = bool(start_col and start_col in work.columns)
+    if time_varying:
+        work = work[work[time_col] > work[start_col]]       # valid (start, stop] intervals
+    else:
+        work = work[work[time_col] > 0]
     if work.empty:
-        return _empty("有效生存时间为空(time <= 0 或全缺失)")
+        return _empty("有效生存时间为空(time <= 0 或 stop <= start)")
 
     dur = work[time_col].to_numpy(dtype=float)
     status = work[event_col].to_numpy(dtype=float)
     X = work[covariates].to_numpy(dtype=float)
+    entry = work[start_col].to_numpy(dtype=float) if time_varying else None
 
     sm = _try_import("statsmodels.api")
 
     log_hr: dict[str, tuple[float, float, float]] = {}
-    cox_note = "statsmodels.PHReg (Cox, Breslow ties)"
+    cox_note = (
+        "statsmodels.PHReg — Andersen-Gill 时变协变量(计数过程 (start,stop],左截断 entry=start)"
+        if time_varying else "statsmodels.PHReg (Cox, Breslow ties)"
+    )
     try:
-        ph = sm.PHReg(dur, X, status=status, ties="breslow")
+        # ``entry`` left-truncates each interval so it enters the risk set at its
+        # start — the Andersen-Gill formulation for time-varying covariates.
+        ph = sm.PHReg(dur, X, status=status, entry=entry, ties="breslow")
         res = ph.fit()
         params = np.asarray(res.params, dtype=float)
         bse = np.asarray(res.bse, dtype=float)
@@ -376,6 +388,9 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
         for name, b, s, p in zip(covariates, params, bse, pvals):
             log_hr[name] = (float(b), float(s), float(p))
     except Exception as exc:  # pragma: no cover - PHReg is available in-env
+        if time_varying:
+            # the numpy fallback ignores left truncation → wrong for AG; refuse.
+            return _empty(f"Andersen-Gill 时变 Cox 需 statsmodels.PHReg(未可用:{exc!s})")
         # honest fallback: Newton-Raphson on the Breslow partial likelihood.
         cox_note = f"fallback: numpy Breslow partial-likelihood Newton ({exc!s})"
         beta = _cox_newton(dur, status, X)

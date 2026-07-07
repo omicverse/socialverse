@@ -52,3 +52,27 @@ def test_survival_reports_logrank_when_grouped():
     sv.tl.survival(s, time="t", event="d", covariates=["x"], group="g")
     lr = s.models["km"]["logrank"]
     assert lr is not None and lr["df"] == 1 and 0.0 <= lr["p"] <= 1.0 and lr["chi2"] >= 0
+
+
+def test_andersen_gill_single_interval_equals_standard_cox():
+    """AG (start=) with one (0, t] interval per subject must equal standard Cox."""
+    df = _toy_survival(n=120)
+    long = df.rename(columns={"t": "stop", "d": "event"}).copy()
+    long["start"] = 0.0
+
+    s_ag = sv.StudyState()
+    sv.pp.ingest(s_ag, data=long)
+    s_ag.write("variables", "outcome", "event")
+    sv.tl.survival(s_ag, time="stop", event="event", start="start", covariates=["x"])
+
+    s_std = sv.StudyState()
+    sv.pp.ingest(s_std, data=df)
+    s_std.write("variables", "outcome", "d")
+    sv.tl.survival(s_std, time="t", event="d", covariates=["x"])
+
+    b_ag = s_ag.models["cox"]["log_hr"]["x"][0]
+    b_std = s_std.models["cox"]["log_hr"]["x"][0]
+    assert "Andersen-Gill" in s_ag.models["cox"]["estimator"]
+    assert abs(b_ag - b_std) < 1e-6      # left-truncation at 0 ≡ ordinary Cox
+    # (real-data recovery of a genuine time-varying effect — employment in the
+    #  Rossi data, employed HR≈0.26 — is validated in notebook 18.)
