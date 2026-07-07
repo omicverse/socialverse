@@ -68,6 +68,7 @@ sv.registry.find("mixed")              # bare command also fuzzy-matches
 | 事件研究(动态 DiD) | 相对处理期的 leads/lags 系数 | `eventdd` / `event_plot` | — | `fixest::sunab` | `sv.tl.event_study` + `sv.pl.event_study_plot` | 事件研究招牌图刻画枪击后逐期选举效应 —— Hassell & Holbein (APSR 2025) |
 | 平行趋势检验 | 处理前趋势平坦性诊断 | (手搭) | — | `HonestDiD`,`pretrends` | `sv.tl.parallel_trends` | 平行趋势与 Rambachan-Roth 敏感性裁决现代 DiD 工具箱 —— Hassell & Holbein (APSR 2025) |
 | 反事实(插补)估计量 FEct/IFEct | untreated 拟合两向FE(+r因子)→插补 Y(0)→异质稳健 ATT + 块 bootstrap + placebo | (手搭) | — | `fect`,`did_imputation`,`did2s`,`gsynth` | `sv.tl.fect` | 反事实估计量修正 TWFE 的负权重偏误(直接民主→移民归化)—— Liu, Wang & Xu (AJPS 2024) |
+| Goodman-Bacon 分解 | TWFE-DiD = 所有 2×2 比较加权平均;量化"已处理作对照"禁忌权重 | `bacondecomp` / `ddtiming` | — | `bacondecomp` | `sv.tl.bacon_decompose` | 分解揭示交错 DiD 中禁忌比较的负权重贡献 —— Goodman-Bacon (J. Econometrics 2021) |
 | Sun-Abraham 交互加权事件研究 | cohort×相对期 CATT 饱和回归 + cohort 份额聚合 | `eventstudyinteract` | — | `fixest::sunab` | `sv.tl.sun_abraham` | 交互加权事件研究免于处理时点异质污染 —— Sun & Abraham (J. Econometrics 2021) |
 | 两步 DiD(Gardner) | 未处理估 unit+time FE → 残差对处理回归 | `did2s` | — | `did2s::did2s` | `sv.tl.did2s` | 两步插补 DiD 得异质稳健 ATT —— Gardner (2021) |
 | 局部投影 DiD | 逐 horizon 结果变化对处理切换回归(清洁对照) | `lpdid` | — | `lpirfs` | `sv.tl.local_projection` | LP-DiD 脉冲响应刻画动态处理效应 —— Dube, Girardi, Jordà & Taylor (2023) |
@@ -84,7 +85,8 @@ sv.registry.find("mixed")              # bare command also fuzzy-matches
 | 有序 Logit | 比例几率累积对数几率 | `ologit` / `oprobit` | `PLUM` | `MASS::polr` | `sv.tl.ologit` | 广义有序 logit:COPD 患者报告更差自评健康的九倍几率 —— Quality of Life Research (2025) |
 | 边际效应 | AME / MEM 后估计边际量 | `margins` / `marginsplot` | — | `marginaleffects::slopes` | `sv.tl.margins` | 边际效应刻画兄弟姐妹数对发展的边际递减 —— Yu & Yan (ASR 2023) |
 | 固定/随机效应面板 | 组内变换 / 混合效应 | `xtreg` / `reghdfe` / `mixed` | `MIXED` | `lme4::lmer`,`fixest::feols` | `sv.tl.multilevel` | 个体嵌套班级多层回归识别移民网络分离效应 —— Zhao (ASR 2025) |
-| Oaxaca-Blinder 分解 | 禀赋 vs 回报的组间差异分解 | `oaxaca` | — | `oaxaca` | `sv.tl.decomposition` | Oaxaca 分解显示禀赋差异解释性别薪酬差 8–40% —— Hedija (AIP Conf. Proc. 2023) |
+| Oaxaca-Blinder 分解 | 组间均值差拆 explained(禀赋/构成)+ unexplained(回报/结构),三分/二分 | `oaxaca` | — | `oaxaca` | `sv.tl.oaxaca` | Oaxaca 分解显示禀赋差异解释性别薪酬差 8–40% —— Hedija (AIP Conf. Proc. 2023) |
+| 出版级回归表 | 多模型三线表:系数+括注 SE+显著性星号+N/R²/FE 行(LaTeX/Markdown/文本) | `esttab` / `outreg2` | — | `modelsummary`,`stargazer` | `sv.pl.regtable` | 多模型回归表是实证论文结果区标配(booktabs 三线表) |
 
 ### 二、测量与调查
 

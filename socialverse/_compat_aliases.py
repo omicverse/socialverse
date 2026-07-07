@@ -40,6 +40,9 @@ PY_ALIASES: dict[str, list[str]] = {
     "dag_refute": ["py-refute_estimate", "py-sensemakr", "py-refute"],         # DoWhy refuters / sensemakr
     "dml": ["py-doubleml", "py-ddml", "py-lineardml", "py-pdslasso"],          # (R) DoubleML (S) ddml/pdslasso
     "causal_forest": ["py-grf", "py-causalforest", "py-econml"],               # (R) grf::causal_forest / EconML
+    "bacon_decompose": ["py-bacondecomp", "py-ddtiming"],                        # (R/S) bacondecomp
+    "oaxaca": ["py-oaxaca_blinder", "py-blinder_oaxaca", "py-rif_decompose"],     # (R/S) oaxaca (py-oaxaca→demographic decomposition)
+    "regtable": ["py-modelsummary", "py-stargazer", "py-regtable"],              # (R) modelsummary/stargazer
     "rdd": ["py-rdrobust", "py-rdbwselect", "py-rddensity"],                   # (S/R) rdrobust
     "synthetic_control": ["py-synth", "py-synth_runner", "py-sdid",            # (S)
                           "py-gsynth", "py-augsynth", "py-synthdid"],          # (R)
