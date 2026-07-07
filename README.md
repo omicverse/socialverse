@@ -52,7 +52,7 @@ sv.registry.get("py-svyglm")           # R survey::svyglm  -> sv.tl.survey_estim
 sv.registry.find("mixed")              # bare command also fuzzy-matches
 ```
 
-128 such aliases across the registry map `mixed`/`lmer`, `stcox`/`coxph`, `svyset`/
+164 such aliases across the registry map `mixed`/`lmer`, `stcox`/`coxph`, `svyset`/
 `svydesign`, `sem`/`lavaan`, `mirt`, `rdrobust`, `ergm`, `truthTable`, `lagsarlm`,
 `oaxaca`, … onto their socialverse equivalents (see `socialverse/_compat_aliases.py`).
 
