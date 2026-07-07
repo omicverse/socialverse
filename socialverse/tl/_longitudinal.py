@@ -350,7 +350,11 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
     if not covariates:
         return _empty("没有可用协变量")
 
-    work = df[[time_col, event_col] + covariates].copy().dropna()
+    # keep the KM grouping column even when it is not a Cox covariate
+    _grp = kwargs.get("group")
+    extra = [_grp] if (_grp and _grp in df.columns
+                       and _grp not in ([time_col, event_col] + covariates)) else []
+    work = df[[time_col, event_col] + covariates + extra].copy().dropna()
     work = work[work[time_col] > 0]
     if work.empty:
         return _empty("有效生存时间为空(time <= 0 或全缺失)")
@@ -395,11 +399,23 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
             if 2 <= u <= 6:
                 group_col = c
                 break
+    logrank: dict[str, Any] | None = None
     if group_col is not None and group_col in work.columns:
         for gval, sub in work.groupby(group_col, observed=True):
             km_by_group[str(gval)] = _km_curve(
                 sm, sub[time_col].to_numpy(float), sub[event_col].to_numpy(float)
             )
+        # log-rank (Mantel-Cox) test that the group survival curves are equal
+        if work[group_col].nunique() >= 2:
+            try:
+                from statsmodels.duration.survfunc import survdiff
+
+                chi2, p = survdiff(dur, status, work[group_col].to_numpy())
+                logrank = {"chi2": float(chi2), "p": float(p),
+                           "df": int(work[group_col].nunique() - 1), "group": group_col,
+                           "note": "log-rank(Mantel-Cox):各组生存曲线是否相同"}
+            except Exception:
+                logrank = None
 
     # -- proportional-hazards test (Grambsch-Therneau / Schoenfeld residuals) --
     ph_test = _ph_schoenfeld_test(sm, dur, status, X, covariates)
@@ -418,7 +434,8 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
         "overall": km_overall,
         "by_group": km_by_group,
         "group_col": group_col,
-        "note": "Kaplan-Meier 生存函数(总体 + 分组),SurvfuncRight",
+        "logrank": logrank,
+        "note": "Kaplan-Meier 生存函数(总体 + 分组)+ log-rank 检验,SurvfuncRight",
     })
     state.write("diagnostics", "ph_test", ph_test)
     return state

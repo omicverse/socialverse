@@ -41,3 +41,14 @@ def test_survival_time_equals_event_is_guarded_not_crash():
     sv.tl.survival(s, time="d", event="d")
     m = s.models["cox"]
     assert m["n"] == 0 and "同一列" in m["note"]
+
+
+def test_survival_reports_logrank_when_grouped():
+    df = _toy_survival(n=120)
+    df["g"] = (df["x"] > 0).astype(int)     # a binary grouping
+    s = sv.StudyState()
+    sv.pp.ingest(s, data=df)
+    s.write("variables", "outcome", "d")
+    sv.tl.survival(s, time="t", event="d", covariates=["x"], group="g")
+    lr = s.models["km"]["logrank"]
+    assert lr is not None and lr["df"] == 1 and 0.0 <= lr["p"] <= 1.0 and lr["chi2"] >= 0
