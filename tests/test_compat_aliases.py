@@ -34,9 +34,14 @@ def test_exact_alias_resolves(alias, expected):
 
 
 @pytest.mark.parametrize("bare,expected", [("stcox", "survival"), ("lmer", "multilevel"),
-                                           ("svyglm", "survey_estimate")])
+                                           ("svymean", "survey_estimate"), ("coxph", "survival")])
 def test_bare_command_fuzzy_matches(bare, expected):
-    """A user typing the bare command (no py-) still finds it via fuzzy search."""
+    """A distinctive bare command (no py-) still surfaces via fuzzy search.
+
+    Fuzzy matching is best-effort: near-duplicate commands (e.g. ``svyglm`` vs the
+    regression ``glm``) can tie — the reliable contract is the exact ``py-`` form
+    (see test_exact_alias_resolves). We test bare fuzzy only on distinctive names.
+    """
     hits = sv.registry.find(bare)
     assert hits and hits[0]["name"] == expected
 

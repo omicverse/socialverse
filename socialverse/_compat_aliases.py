@@ -36,6 +36,19 @@ PY_ALIASES: dict[str, list[str]] = {
     "rdd": ["py-rdrobust", "py-rdbwselect", "py-rddensity"],                   # (S/R) rdrobust
     "synthetic_control": ["py-synth", "py-synth_runner", "py-sdid",            # (S)
                           "py-gsynth", "py-augsynth", "py-synthdid"],          # (R)
+    # ---- regression base (P0) --------------------------------------------
+    "glm": ["py-regress", "py-logit", "py-probit", "py-poisson", "py-nbreg",   # (S)
+            "py-glm", "py-lm",                                                  # (R)
+            "py-REGRESSION", "py-GENLIN", "py-LOGISTIC"],                       # (SPSS)
+    "mlogit": ["py-mlogit", "py-multinom", "py-NOMREG"],                       # (S/R/SPSS)
+    "ologit": ["py-ologit", "py-oprobit", "py-polr", "py-PLUM"],               # (S/R/SPSS)
+    "margins": ["py-margins", "py-marginsplot",                                # (S)
+                "py-marginaleffects", "py-emmeans", "py-slopes"],              # (R)
+    "iv_regress": ["py-ivregress", "py-ivreg2", "py-ivreg", "py-2SLS"],        # (S/R/SPSS)
+    "psm": ["py-psmatch2", "py-teffects", "py-kmatch",                         # (S)
+            "py-matchit", "py-weightit"],                                       # (R)
+    "mediation": ["py-mediate", "py-med4way", "py-sgmediation",                # (S)
+                  "py-mediation", "py-PROCESS"],                                # (R/SPSS Hayes PROCESS)
     # ---- complex survey ---------------------------------------------------
     "declare_design": ["py-svyset", "py-xtset", "py-tsset",                    # (S) design declaration
                        "py-svydesign", "py-declare_design",                    # (R) survey::svydesign

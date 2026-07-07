@@ -1,9 +1,14 @@
 """sv.tl — analyze phase: causal, survey, econ, qualitative, text, theory-lens,
 network, plus gap methods (psychometrics, quasi-experiment, longitudinal, spatial,
-set-theoretic/QCA, demography, stylometry)."""
+set-theoretic/QCA, demography, stylometry) and the P0 regression base
+(glm/mlogit/ologit/margins, iv_regress, psm, mediation)."""
 from ._survey import *        # noqa: F401,F403
 from ._causal import *        # noqa: F401,F403
 from ._econ import *          # noqa: F401,F403
+from ._regression import *    # noqa: F401,F403
+from ._iv import *            # noqa: F401,F403
+from ._matching import *      # noqa: F401,F403
+from ._mediation import *     # noqa: F401,F403
 from ._qual import *          # noqa: F401,F403
 from ._text import *          # noqa: F401,F403
 from ._lens import *          # noqa: F401,F403

@@ -1,6 +1,6 @@
 # socialverse 教程
 
-16 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。全部用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
+17 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。全部用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
 
 每本都配套一个 jupytext `.py`(干净可 diff 的源)与一个已执行的 `.ipynb`(含输出与图)。
 
@@ -17,10 +17,11 @@ jupyter lab notebooks/       # 逐格运行;或直接阅读已执行的 .ipynb
 |---|---|
 | 01 | [快速上手:用一个最小分析认识 StudyState 与函数注册表](01_registry_and_studystate.ipynb) |
 
-## 因果推断与计量
+## 回归底座与因果推断
 
 | # | 教程 | 对标 |
 |---|---|---|
+| 17 | [回归底座与因果工具箱:GLM、工具变量、匹配与中介](17_regression_iv_matching_mediation.ipynb) | R `glm`/`ivreg`/`MatchIt`/`mediation` · Stata `logit`/`ivregress`/`psmatch2`/`mediate` |
 | 02 | [用双重差分评估一项政策的因果效应](02_causal_did.ipynb) | pyfixest · R `fixest`/`did` |
 | 11 | [没有随机分配时,如何识别因果:断点回归与合成控制](11_quasi_experiment.ipynb) | `rdrobust` · `gsynth` |
 | 04 | [把一篇实证论文打包成可复现的复现件](04_econometrics_replication.ipynb) | R `fixest` + 复现管线 |

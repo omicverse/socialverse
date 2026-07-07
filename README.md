@@ -129,12 +129,13 @@ Governance is a first-class axis — in social science, ethics/licence/PII/AI-di
 gate almost every analysis, so they are registered functions with their own contracts,
 not an afterthought.
 
-## Method coverage (54 registered functions)
+## Method coverage (61 registered functions)
 
 Each family is a real, tested implementation (pure numpy/scipy/statsmodels, with the
 champion backend lazy-imported when present) — see [docs/CONTRACT_CARDS.md](docs/CONTRACT_CARDS.md).
 
-- **causal / quasi-experimental**: TWFE-DiD, event-study, **RDD** (local-linear), **synthetic control**
+- **regression base**: **GLM** (`glm` covers OLS / logit / probit / Poisson), **multinomial** (`mlogit`), **ordered** (`ologit`), **average marginal effects** (`margins`)
+- **causal / quasi-experimental**: TWFE-DiD, event-study, **RDD** (local-linear), **synthetic control**, **IV / 2SLS** (`iv_regress`), **propensity-score matching / IPW** (`psm`), **causal mediation** (`mediation`)
 - **econometrics**: 8-step replication pipeline (emits reproducible R/Stata scripts)
 - **complex survey**: design-based weighted estimation (strata/PSU/weights)
 - **psychometrics**: **CFA**, **SEM** (path fallback), **IRT** (2PL) — reliability, fit indices
