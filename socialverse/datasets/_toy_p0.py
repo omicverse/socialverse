@@ -83,3 +83,23 @@ def load_mediation(n: int = 600, seed: int = 0) -> pd.DataFrame:
     m = 0.5 + 0.6 * x + rng.normal(0, 1.0, n)
     y = 1.0 + 0.3 * x + 0.7 * m + rng.normal(0, 1.0, n)
     return pd.DataFrame({"y": y, "x": x, "m": m})
+
+
+def load_ratings(n: int = 120, raters: int = 3, categories: int = 4,
+                 agree: float = 0.8, seed: int = 0) -> pd.DataFrame:
+    """Inter-rater / inter-coder data: ``n`` subjects each coded by ``raters``.
+
+    Each subject has a hidden true category; every rater reports the truth with
+    probability ``agree``, else a uniformly random other category. With
+    ``agree=0.8`` over 4 categories the raters are in *substantial* agreement, so
+    Cohen's/Fleiss' κ and Krippendorff's α should land well above chance (≈0.6–0.8).
+    Columns: ``rater_1 … rater_k`` (categorical codes).
+    """
+    rng = np.random.default_rng(seed)
+    truth = rng.integers(0, categories, n)
+    cols = {}
+    for r in range(1, raters + 1):
+        keep = rng.random(n) < agree
+        noise = rng.integers(0, categories, n)
+        cols[f"rater_{r}"] = np.where(keep, truth, noise)
+    return pd.DataFrame(cols)

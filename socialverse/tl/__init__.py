@@ -9,6 +9,9 @@ from ._regression import *    # noqa: F401,F403
 from ._iv import *            # noqa: F401,F403
 from ._matching import *      # noqa: F401,F403
 from ._mediation import *     # noqa: F401,F403
+from ._efa import *           # noqa: F401,F403
+from ._reliability import *   # noqa: F401,F403
+from ._interrater import *    # noqa: F401,F403
 from ._qual import *          # noqa: F401,F403
 from ._text import *          # noqa: F401,F403
 from ._lens import *          # noqa: F401,F403

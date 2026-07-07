@@ -64,6 +64,12 @@ PY_ALIASES: dict[str, list[str]] = {
     "sem": ["py-sem", "py-gsem", "py-growth"],                                # (S) sem/gsem; (R) lavaan::sem/growth
     "irt": ["py-irt", "py-irt_2pl", "py-irt_grm",                             # (S) irt
             "py-mirt", "py-ltm", "py-grm", "py-rasch"],                        # (R) mirt/ltm
+    "efa": ["py-factor", "py-pca",                                            # (S) factor/pca; (SPSS) FACTOR
+            "py-fa", "py-principal", "py-fa_parallel"],                        # (R) psych::fa
+    "reliability": ["py-alpha_full", "py-omega", "py-mcdonald",                # (R) psych::alpha/omega
+                    "py-icc", "py-item_total"],
+    "interrater": ["py-kappa", "py-kap", "py-kappam_fleiss",                   # (S) kap; (R) irr; (SPSS) KAPPA
+                   "py-kripp_alpha", "py-krippalpha", "py-irr"],               # (R) irr::kripp.alpha
     # ---- multilevel / longitudinal ---------------------------------------
     "multilevel": ["py-mixed", "py-meglm", "py-melogit", "py-mepoisson",       # (S) mixed/me*
                    "py-xtreg", "py-reghdfe",                                    # (S) panel FE
