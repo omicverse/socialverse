@@ -325,11 +325,18 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
     if df is None:
         return _empty("缺少数据(sources['datasets']),无法进行生存分析")
 
-    time_col = kwargs.get("time", "time")
-    event_col = kwargs.get("event", "event")
-    if time_col not in df.columns:
-        # fall back to declared outcome as the duration
-        time_col = state.variables.get("outcome") or time_col
+    # ``duration`` is accepted as an alias for ``time`` (more intuitive). The
+    # event indicator falls back to the declared outcome, since for survival
+    # ``variables['outcome']`` conventionally names the event column.
+    time_col = kwargs.get("time") or kwargs.get("duration") or "time"
+    event_col = kwargs.get("event") or state.variables.get("outcome") or "event"
+    if time_col not in df.columns and state.design.get("duration") in df.columns:
+        time_col = state.design.get("duration")
+    if time_col == event_col:
+        return _empty(
+            f"time 与 event 不能是同一列('{time_col}')— 用 time=/duration= 指定生存时间、"
+            f"event= 或 variables['outcome'] 指定事件指示"
+        )
     if time_col not in df.columns or event_col not in df.columns:
         return _empty(f"缺少生存列(time='{time_col}' / event='{event_col}')")
 

@@ -1,6 +1,8 @@
 # socialverse 教程
 
-17 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。全部用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
+18 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
+
+> **[18 · 完整复现:Rossi 累犯实验的 Cox 模型](18_reproduction_rossi_cox.ipynb)** 用**真实公开数据**(Rossi 随机实验)端到端复现一项已发表研究,socialverse 系数与 Allison (2014) 发表值**逐位吻合(最大偏差 < 0.002)**——"一篇论文 = 一条 socialverse 函数链"的字面证明。
 
 每本都配套一个 jupytext `.py`(干净可 diff 的源)与一个已执行的 `.ipynb`(含输出与图)。
 
