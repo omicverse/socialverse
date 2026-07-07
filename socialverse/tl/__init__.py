@@ -5,6 +5,9 @@ set-theoretic/QCA, demography, stylometry) and the P0 regression base
 from ._survey import *        # noqa: F401,F403
 from ._causal import *        # noqa: F401,F403
 from ._fect import *          # noqa: F401,F403
+from ._dag import *           # noqa: F401,F403
+from ._dml import *           # noqa: F401,F403
+from ._moderndid import *     # noqa: F401,F403
 from ._econ import *          # noqa: F401,F403
 from ._regression import *    # noqa: F401,F403
 from ._iv import *            # noqa: F401,F403

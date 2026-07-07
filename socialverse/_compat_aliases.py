@@ -30,11 +30,16 @@ PY_ALIASES: dict[str, list[str]] = {
     # ---- causal / quasi-experimental -------------------------------------
     "did": ["py-didregress", "py-xtdidregress", "py-csdid", "py-hdidregress",  # (S)
             "py-att_gt", "py-did"],                                            # (R) did::att_gt
-    "event_study": ["py-eventdd", "py-event_plot", "py-eventstudyinteract",    # (S)
-                    "py-sunab", "py-aggte"],                                    # (R) fixest::sunab, did::aggte
+    "event_study": ["py-eventdd", "py-event_plot", "py-aggte"],                # (S) eventdd (R) did::aggte
     "parallel_trends": ["py-pretrends"],                                       # (R) HonestDiD/pretrends
-    "fect": ["py-fect", "py-ifect", "py-did_imputation", "py-didimputation",   # (R) fect / did_imputation
-             "py-did2s", "py-did_multiplegt"],                                 # (R) did2s / DIDmultiplegt
+    "fect": ["py-fect", "py-ifect", "py-did_imputation", "py-didimputation"],  # (R) fect / did_imputation
+    "sun_abraham": ["py-sunab", "py-eventstudyinteract", "py-did_multiplegt"], # (R) fixest::sunab (S) eventstudyinteract
+    "did2s": ["py-did2s", "py-gardner", "py-did_two_stage"],                   # (R/S) did2s
+    "local_projection": ["py-lpdid", "py-lpirfs", "py-jordals"],              # (R) lpirfs (S) lpdid
+    "dag_identify": ["py-dowhy", "py-dagitty", "py-backdoor", "py-identify_effect"],  # DoWhy / dagitty
+    "dag_refute": ["py-refute_estimate", "py-sensemakr", "py-refute"],         # DoWhy refuters / sensemakr
+    "dml": ["py-doubleml", "py-ddml", "py-lineardml", "py-pdslasso"],          # (R) DoubleML (S) ddml/pdslasso
+    "causal_forest": ["py-grf", "py-causalforest", "py-econml"],               # (R) grf::causal_forest / EconML
     "rdd": ["py-rdrobust", "py-rdbwselect", "py-rddensity"],                   # (S/R) rdrobust
     "synthetic_control": ["py-synth", "py-synth_runner", "py-sdid",            # (S)
                           "py-gsynth", "py-augsynth", "py-synthdid"],          # (R)

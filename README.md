@@ -68,6 +68,12 @@ sv.registry.find("mixed")              # bare command also fuzzy-matches
 | 事件研究(动态 DiD) | 相对处理期的 leads/lags 系数 | `eventdd` / `event_plot` | — | `fixest::sunab` | `sv.tl.event_study` + `sv.pl.event_study_plot` | 事件研究招牌图刻画枪击后逐期选举效应 —— Hassell & Holbein (APSR 2025) |
 | 平行趋势检验 | 处理前趋势平坦性诊断 | (手搭) | — | `HonestDiD`,`pretrends` | `sv.tl.parallel_trends` | 平行趋势与 Rambachan-Roth 敏感性裁决现代 DiD 工具箱 —— Hassell & Holbein (APSR 2025) |
 | 反事实(插补)估计量 FEct/IFEct | untreated 拟合两向FE(+r因子)→插补 Y(0)→异质稳健 ATT + 块 bootstrap + placebo | (手搭) | — | `fect`,`did_imputation`,`did2s`,`gsynth` | `sv.tl.fect` | 反事实估计量修正 TWFE 的负权重偏误(直接民主→移民归化)—— Liu, Wang & Xu (AJPS 2024) |
+| Sun-Abraham 交互加权事件研究 | cohort×相对期 CATT 饱和回归 + cohort 份额聚合 | `eventstudyinteract` | — | `fixest::sunab` | `sv.tl.sun_abraham` | 交互加权事件研究免于处理时点异质污染 —— Sun & Abraham (J. Econometrics 2021) |
+| 两步 DiD(Gardner) | 未处理估 unit+time FE → 残差对处理回归 | `did2s` | — | `did2s::did2s` | `sv.tl.did2s` | 两步插补 DiD 得异质稳健 ATT —— Gardner (2021) |
+| 局部投影 DiD | 逐 horizon 结果变化对处理切换回归(清洁对照) | `lpdid` | — | `lpirfs` | `sv.tl.local_projection` | LP-DiD 脉冲响应刻画动态处理效应 —— Dube, Girardi, Jordà & Taylor (2023) |
+| 因果图识别 + 反驳(DoWhy 四步) | DAG→后门/前门/IV 识别估计量→安慰剂/共因/子样本/敏感性反驳 | (手搭) | — | `dagitty`,`DoWhy` | `sv.tl.dag_identify` + `sv.tl.dag_refute` | 因果图显式化识别假设 + 反驳测试(Pearl do-演算) —— Pearl; Sharma & Kiciman (DoWhy 2020) |
+| 双重机器学习 DML / CATE | cross-fitting + 正交残差回归估 ATE 与线性 CATE θ(x) | `ddml` / `pdslasso` | — | `DoubleML`,`EconML` | `sv.tl.dml` | DML 用 ML 去混杂估异质处理效应 —— Chernozhukov et al. (Econometrics J. 2018) |
+| 因果森林 / ForestDML | R-learner 森林最终阶段的非参 per-unit CATE + 特征重要度 | — | — | `grf::causal_forest`,`EconML` | `sv.tl.causal_forest` | 因果森林估计个体处理效应异质性 —— Wager & Athey (JASA 2018);Nie & Wager (2021) |
 | RDD(断点回归) | 断点处局部多项式跳跃 | `rdrobust` / `rdplot` | — | `rdrobust::rdrobust` | `sv.tl.rdd` + `sv.pl.rdd_plot` | 险胜选举断点识别当选者特征的下游效应 —— Marshall (AJPS 2024) |
 | 合成控制 | 加权对照拟合反事实路径 | `synth` / `synth_runner` | — | `Synth`,`augsynth`,`gsynth` | `sv.tl.synthetic_control` + `sv.pl.synth_path` | 合成控制评估洛杉矶大型养老机构条例的前后效应 —— Frochen, Rodnyansky & Ailshire (2024) |
 | 工具变量 / 2SLS | 份额×供给外生变异两阶段 | `ivregress` / `ivreg2` | `2SLS` | `AER::ivreg`,`fixest` | `sv.tl.iv_regress` | Shift-share IV 识别大迁徙对代际流动的因果影响 —— Derenoncourt (AER 2022) |
