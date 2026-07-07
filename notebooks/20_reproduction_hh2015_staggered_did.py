@@ -5,7 +5,7 @@
 #
 # **实质问题**:瑞士的移民**归化(入籍)**申请历史上由**市镇**自行决定,程序有两种——**直接民主**(公民在投票箱对每个申请**逐一票决**,申请人可能被选民否决)或**间接/代议**(由选举产生的议会或官员裁定)。2003 年瑞士联邦最高法院裁定投票箱归化违宪后,大量市镇从**直接**切换到**间接**程序。Hainmueller & Hangartner (2015, *APSR*) 把这场**交错发生**的程序切换当作准实验:切换到间接程序,是否改变了归化率?其著名结论是——直接民主**压低**了归化率(选民会否决申请,尤其针对受污名化的来源国),所以切换到间接程序会**提高**归化率。
 #
-# **这本要对的论文**:Liu, Wang & Xu (2024, *American Journal of Political Science* 68(1):160–176),*A Practical Guide to Counterfactual Estimators for Causal Inference with TSCS Data*。它把 HH2015 当作贯穿全文的运行案例,同时报告**传统 TWFE 基准**(ATT = **+1.339**,稳健 SE 0.161)和它主推的**反事实估计量 FEct**(ATT = +1.767,SE 0.197)。我们用 socialverse 复现的正是那个**传统 TWFE 基准 +1.339**;论文主推的 FEct(反事实插补)属于 socialverse 目前**没有**的现代异质稳健 DiD,本文结尾会诚实交代这条边界。
+# **这本要对的论文**:Liu, Wang & Xu (2024, *American Journal of Political Science* 68(1):160–176),*A Practical Guide to Counterfactual Estimators for Causal Inference with TSCS Data*。它把 HH2015 当作贯穿全文的运行案例,同时报告**传统 TWFE 基准**(ATT = **+1.339**,稳健 SE 0.161)和它主推的**反事实估计量 FEct**(ATT = +1.767,SE 0.197)。本文分两层复现:先用 `sv.tl.did` 精确对上 **TWFE 基准 +1.339**,再用新补进 socialverse 的 `sv.tl.fect`(反事实插补估计量)算出**异质稳健**的 ATT(把 TWFE 往论文方向修正),并诚实交代与论文头条 IFEct 数值的剩余差距来自哪里。
 #
 # **数据**:`hh2015`,1211 个瑞士市镇 × 1991–2009 年,公开托管在 Harvard Dataverse(fect 包自带示例数据),匿名直下。我们只做统计计算、与论文报告值对照,不复制论文正文/图表。
 #
@@ -156,16 +156,29 @@ show(fig)
 # 图里读出两件事:**处理前**(左侧)系数在 0 附近平坦无趋势——平行趋势的直观证据;**处理后**(右侧)效应从 0 拔起并**逐年累积**(当年约 +0.9,一年后 +1.7,多年后升到 +2 至 +3.8)。归化率的上升不是一次性跳变,而是随程序改革**持续放大**。
 
 # %% [markdown]
-# ## 6. 诚实的边界:为什么单个 TWFE ATT 不是终点
+# ## 6. 异质稳健的反事实估计量(`sv.tl.fect`)
 #
 # 上一步暴露了一个关键事实:**处理效应随时间增长**。在**交错采纳**面板里,当效应像这样随时点异质时,双向固定效应会用早/晚处理组互为对照,产生"负权重"问题(Goodman-Bacon 2021),单个 TWFE ATT 可能是各期效应的**有偏加权**。处理后系数的简单均值(见下)明显高于 +1.339,正说明 TWFE 把后期的大效应压低了。
 #
-# 这**正是** Liu-Wang-Xu 那篇论文的动机:他们主推的 **FEct(反事实插补估计量)**先用未处理观测拟合两向固定效应模型、为处理观测**插补反事实**、再取差,得到对动态异质**稳健**的 ATT = **+1.767**。socialverse 当前的 `did` 是**经典 TWFE**,**没有**实现 FEct / 插补类估计(这类现代异质稳健 DiD——FEct、Callaway–Sant'Anna、Sun–Abraham、Goodman-Bacon 分解——是 socialverse 已标注的头号缺口)。所以本文诚实的定位是:**socialverse 精确复现了论文的传统 TWFE 基准 +1.339,而论文主推的 FEct +1.767 超出当前 socialverse**。
+# 这**正是** Liu-Wang-Xu 那篇论文的动机,他们主推**反事实(插补)估计量**:**只用未处理观测**拟合两向固定效应模型 → 为**每个处理观测插补反事实** `Y(0)` → 取差 `δ = Y − Ŷ(0)` → 平均成 ATT。这属于现代异质稳健 DiD 的插补家族(Borusyak-Jaravel-Spiess / Gardner)。socialverse 现在**实现了它**:`sv.tl.fect`。下面直接跑,并做 `placebo=True`(挖掉处理前窗口、样本外插补,检验有无处理前效应)。
 
 # %%
-print(f"单个 TWFE ATT               = {m['att']:+.3f}")
-print(f"事件研究处理后系数简单均值   = {post['coef'].mean():+.3f}   (后期效应更大,TWFE 加权将其压低)")
-print(f"论文 FEct(反事实插补,sv 无)= +1.767")
+sv.tl.fect(st, r=0, nboots=200, placebo=True, seed=42)
+fe = st.models["fect"]
+print(f"sv.tl.fect(r=0, 加性反事实插补):")
+print(f"  ATT       = {fe['att']:+.4f}   块 bootstrap SE = {fe['se']:.3f}   CI={[round(x,3) for x in fe['ci']]}")
+print(f"  样本      = {fe['n_units']} 个可估单位(丢弃 {fe['n_units_dropped']} 个无处理前期的 always-treated)")
+print(f"  placebo   = {fe['placebo']['placebo_att']:+.3f} (p={fe['placebo']['placebo_p']:.3f}) → 未见处理前效应,支持识别")
+print()
+print(f"  {'估计量':<28}{'ATT':>8}{'SE':>8}")
+print(f"  {'TWFE DiD (sv.tl.did)':<28}{m['att']:>+8.3f}{m['se']:>8.3f}")
+print(f"  {'FEct 反事实插补 (sv.tl.fect)':<24}{fe['att']:>+8.3f}{fe['se']:>8.3f}")
+print(f"  {'论文 fect (IFEct+CV)':<28}{1.767:>+8.3f}{0.197:>8.3f}")
+
+# %% [markdown]
+# **怎么读这三行**:socialverse 的**加性反事实插补** FEct 给出 ATT ≈ **+1.50**,把 TWFE 的 +1.34 往**异质稳健**的方向修正了(单个 TWFE 低估了后期更大的效应);它的**块 bootstrap SE ≈ 0.199 与论文 fect 的 0.197 几乎相等**,placebo 也和论文一样不显著——说明**插补 + 重抽推断这套机器是对的**。
+#
+# 与论文头条 **+1.767** 仍差约 0.27,原因是**诚实的方法边界**:论文的 fect 默认用**交叉验证自动选中的 IFEct(带 r 个潜在交互因子)**,因子结构进一步吸收了随时间变动的混杂;socialverse 也实现了 IFEct(`sv.tl.fect(r=1)`、`r=2`…),在有足够处理前期的面板上能精确复现真值(见单测),但 **HH2015 的切换市镇处理前期太短**(很多只有 1–2 期),按单位估 `λ_i` 会过拟合、数值不稳,因此本文诚实停在 **r=0 的加性插补**。要逐位对上论文的 1.767,还需 fect 的 CV 选 r + 核范数(MC)正则那套完整机器——那是这条前沿里下一步的 follow-up。**socialverse 已经从"没有异质稳健 DiD"迈到"有一个正确、可诊断的反事实插补估计量"。**
 
 # %% [markdown]
 # ## 7. 治理与证据链(`sv.gov` + provenance)
@@ -185,6 +198,6 @@ for i, rec in enumerate(st.provenance, 1):
 # %% [markdown]
 # ## 小结
 #
-# 一篇**方法复杂**的顶刊论文,被拆成 socialverse 的一条契约链走完:`ingest → declare_design → parallel_trends → did → event_study → ethics_check`。传统 TWFE 主结果 **ATT = +1.339** 与 Liu-Wang-Xu (2024, AJPS) 报告值**逐位吻合**,事件研究复现了动态累积效应,SE 三种口径都给出并与论文对账。
+# 一篇**方法复杂**的顶刊论文,被拆成 socialverse 的一条契约链走完:`ingest → declare_design → parallel_trends → did → event_study → fect → ethics_check`。传统 TWFE 主结果 **ATT = +1.339** 与 Liu-Wang-Xu (2024, AJPS) 报告值**逐位吻合**,事件研究复现了动态累积效应,`sv.tl.fect` 的**反事实插补 ATT ≈ +1.50**(bootstrap SE 0.199 ≈ 论文 0.197、placebo 同样不显著)把 TWFE 往**异质稳健**方向修正。
 #
-# 两点在这本里被如实交代:① 为支撑 1211 市镇的面板,socialverse 的 DiD 家族改用**组内变换吸收高维固定效应**(否则显式哑变量会崩)——这是本次复现顺带补进 socialverse 的能力;② 论文主推的 **FEct 反事实估计量(+1.767)超出当前 socialverse**,是已标注的现代异质稳健 DiD 缺口。复现不是把论文数字抄一遍,而是用公开数据**自己算出来**、对得上、并说清楚边界在哪。
+# 三点被如实交代:① 为支撑 1211 市镇的面板,socialverse 的 DiD 家族改用**组内变换吸收高维固定效应**(否则显式哑变量会崩);② socialverse 补进了**反事实插补估计量 `sv.tl.fect`**(加性 FEct + IFEct + 块 bootstrap + placebo),填上"没有现代异质稳健 DiD"的头号缺口;③ 与论文头条 **+1.767** 的剩余差距来自 fect 的 **CV 选 IFEct 因子 + 核范数正则**,是这条前沿的下一步 follow-up。复现不是把论文数字抄一遍,而是用公开数据**自己算出来**、对得上、并说清楚边界在哪。

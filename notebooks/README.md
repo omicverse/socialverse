@@ -2,7 +2,7 @@
 
 20 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
 
-> **[20 · 复现方法复杂的顶刊论文:交错采纳 DiD(直接民主与移民归化)](20_reproduction_hh2015_staggered_did.ipynb)** 用 Harvard Dataverse 上**公开的 1211 市镇面板**端到端复现 Liu-Wang-Xu (2024, *AJPS*) 的 HH2015 案例:声明面板设计 → 平行趋势 → **TWFE DiD** → 事件研究 → 稳健性 → 诚实标注 FEct 边界。socialverse 的 **TWFE ATT = +1.339 与论文报告值逐位吻合**;这本也顺带把 DiD 家族升级成**吸收高维固定效应**(千级单位面板可跑)。
+> **[20 · 复现方法复杂的顶刊论文:交错采纳 DiD(直接民主与移民归化)](20_reproduction_hh2015_staggered_did.ipynb)** 用 Harvard Dataverse 上**公开的 1211 市镇面板**端到端复现 Liu-Wang-Xu (2024, *AJPS*) 的 HH2015 案例:声明面板设计 → 平行趋势 → **TWFE DiD** → 事件研究 → **反事实插补估计量 `sv.tl.fect`** → 稳健性。socialverse 的 **TWFE ATT = +1.339 与论文逐位吻合**,`sv.tl.fect` 的反事实插补 ATT(bootstrap SE ≈ 论文 0.197、placebo 同样不显著)把 TWFE 往异质稳健方向修正;这本顺带把 DiD 家族升级成**吸收高维固定效应**(千级面板可跑)、并补进**反事实插补估计量**(FEct/IFEct)。
 >
 > **[19 · 复现近年顶刊(JPSP 2023)的中介效应](19_reproduction_jpsp2023_mediation.ipynb)** 用作者**公开的原始数据**复现一篇 2023 年 JPSP 论文的核心中介发现,`sv.tl.mediation` 估的间接效应 **ACME≈0.31 [0.08,0.53] 与发表值逐位吻合**——近年顶刊 + 公开数据版的"论文=函数链"。
 >

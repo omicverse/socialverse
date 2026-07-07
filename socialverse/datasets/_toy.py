@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-__all__ = ["load_did_panel", "load_survey", "load_corpus", "load_bib"]
+__all__ = ["load_did_panel", "load_did_staggered", "load_survey", "load_corpus", "load_bib"]
 
 
 def load_did_panel(n_units: int = 40, n_periods: int = 8, treat_period: int = 5,
@@ -39,6 +39,44 @@ def load_did_panel(n_units: int = 40, n_periods: int = 8, treat_period: int = 5,
                 "x1": round(float(rng.normal(0, 1)), 4),
             })
     return pd.DataFrame(rows)
+
+
+def load_did_staggered(n_units: int = 120, n_periods: int = 12, att: float = 2.0,
+                       seed: int = 0) -> pd.DataFrame:
+    """A **staggered-adoption** panel with a *dynamic* treatment effect that grows
+    with time-since-treatment. Cohorts adopt at different dates; a third of units
+    never adopt (clean controls). Because the effect is dynamic, two-way-FE DID
+    (``sv.tl.did``) mis-weights the cohorts (Goodman-Bacon) and is biased, whereas the
+    counterfactual estimator (``sv.tl.fect``) recovers the true average effect
+    ``mean_over_treated(att * months_since_treatment / 3)``.
+
+    Columns: unit, period, treat_post, first_treated, y. The true ATT is stored on
+    the frame's ``.attrs['true_att']``.
+    """
+    rng = np.random.default_rng(seed)
+    unit_fe = rng.normal(0, 2.0, n_units)
+    time_fe = np.linspace(0, 2.0, n_periods)
+    # cohorts adopt at staggered dates; ~1/3 never treated
+    first = np.where(rng.random(n_units) < 0.67,
+                     rng.integers(3, n_periods - 1, n_units), 0)
+    rows, eff = [], []
+    for i in range(n_units):
+        for t in range(n_periods):
+            treated = first[i] > 0 and t >= first[i]
+            te = att * (t - first[i] + 1) / 3.0 if treated else 0.0
+            y = unit_fe[i] + time_fe[t] + te + rng.normal(0, 0.4)
+            rows.append({
+                "unit": int(i),
+                "period": int(t),
+                "treat_post": int(treated),
+                "first_treated": int(first[i]),
+                "y": round(float(y), 4),
+            })
+            if treated:
+                eff.append(te)
+    df = pd.DataFrame(rows)
+    df.attrs["true_att"] = float(np.mean(eff))
+    return df
 
 
 def load_survey(n: int = 300, k_items: int = 6, seed: int = 0) -> pd.DataFrame:

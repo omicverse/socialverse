@@ -33,6 +33,8 @@ PY_ALIASES: dict[str, list[str]] = {
     "event_study": ["py-eventdd", "py-event_plot", "py-eventstudyinteract",    # (S)
                     "py-sunab", "py-aggte"],                                    # (R) fixest::sunab, did::aggte
     "parallel_trends": ["py-pretrends"],                                       # (R) HonestDiD/pretrends
+    "fect": ["py-fect", "py-ifect", "py-did_imputation", "py-didimputation",   # (R) fect / did_imputation
+             "py-did2s", "py-did_multiplegt"],                                 # (R) did2s / DIDmultiplegt
     "rdd": ["py-rdrobust", "py-rdbwselect", "py-rddensity"],                   # (S/R) rdrobust
     "synthetic_control": ["py-synth", "py-synth_runner", "py-sdid",            # (S)
                           "py-gsynth", "py-augsynth", "py-synthdid"],          # (R)

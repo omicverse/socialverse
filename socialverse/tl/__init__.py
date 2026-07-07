@@ -4,6 +4,7 @@ set-theoretic/QCA, demography, stylometry) and the P0 regression base
 (glm/mlogit/ologit/margins, iv_regress, psm, mediation)."""
 from ._survey import *        # noqa: F401,F403
 from ._causal import *        # noqa: F401,F403
+from ._fect import *          # noqa: F401,F403
 from ._econ import *          # noqa: F401,F403
 from ._regression import *    # noqa: F401,F403
 from ._iv import *            # noqa: F401,F403
