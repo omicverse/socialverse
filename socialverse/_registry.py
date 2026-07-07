@@ -151,6 +151,34 @@ class FunctionRegistry:
                 # generic producer of the whole slot (empty key list)
                 self._producers.setdefault((slot, "*"), set()).add(entry.name.lower())
 
+    def add_aliases(self, name: str, aliases: Iterable[str]) -> int:
+        """Attach extra search aliases to an already-registered function.
+
+        Used by the Stata/R/SPSS compatibility layer (``_compat_aliases``) so that
+        familiar command names (e.g. ``py-lmer``, ``py-stcox``, ``py-svyglm``)
+        resolve to the socialverse equivalent via :meth:`get` / :meth:`find` and
+        the ``registry_lookup`` surface. Returns the count of newly added aliases.
+        Unknown ``name`` is a no-op. An alias already bound to a *different*
+        function is skipped (first binding wins) rather than silently rebound.
+        """
+        entry = self.get(name)
+        if entry is None:
+            return 0
+        added = 0
+        for a in aliases:
+            key = (a or "").strip().lower()
+            if not key:
+                continue
+            owner = self._aliases.get(key)
+            if owner and owner != entry.name.lower():
+                continue  # bound to another function — don't rebind
+            if key not in self._aliases:
+                added += 1
+            self._aliases[key] = entry.name.lower()
+            if a not in entry.aliases:
+                entry.aliases.append(a)
+        return added
+
     # ------------------------------------------------------------------ lookup
     def get(self, query: str) -> RegistryEntry | None:
         q = (query or "").lower()

@@ -36,7 +36,7 @@ from ._registry import (  # noqa: F401
 from ._slots import SLOTS, VALID_SLOTS  # noqa: F401
 from ._state import StudyState  # noqa: F401
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Import submodules for their side effect: each module's @register calls populate
 # the singleton registry. Wrapped in a guard so a missing optional dep in one
@@ -57,6 +57,16 @@ def _load_submodules() -> None:
 
 
 _load_submodules()
+
+# Stata/R/SPSS command-name compatibility aliases (py-lmer, py-stcox, py-svyglm …)
+# so researchers can find methods by the command name they already know. Applied
+# after all @register calls so every function that loaded gets its aliases.
+try:
+    from ._compat_aliases import apply as _apply_compat_aliases
+
+    _apply_compat_aliases(registry)
+except Exception:  # pragma: no cover - never let the compat layer break import
+    pass
 
 # the OmicOS-facing query surface (sv.utils.registry_lookup / registry_summary) —
 # imported after the analysis modules so the registry is fully populated.

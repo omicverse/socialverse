@@ -40,6 +40,22 @@ sv.registry.get_prerequisites("did")  # what does DID require & produce? who sat
 sv.registry.resolve_plan("sv.pl.forest")   # order the chain to reach a target
 ```
 
+### Coming from R / Stata / SPSS?
+
+Search by the command name you already know — every function carries `py-<command>`
+aliases drawn from Stata, R, and SPSS (the `py-` marks the Python reimplementation):
+
+```python
+sv.registry.get("py-lmer")             # R lme4::lmer      -> sv.tl.multilevel
+sv.registry.get("py-stcox")            # Stata stcox       -> sv.tl.survival
+sv.registry.get("py-svyglm")           # R survey::svyglm  -> sv.tl.survey_estimate
+sv.registry.find("mixed")              # bare command also fuzzy-matches
+```
+
+128 such aliases across the registry map `mixed`/`lmer`, `stcox`/`coxph`, `svyset`/
+`svydesign`, `sem`/`lavaan`, `mirt`, `rdrobust`, `ergm`, `truthTable`, `lagsarlm`,
+`oaxaca`, … onto their socialverse equivalents (see `socialverse/_compat_aliases.py`).
+
 `get_prerequisites("did")` returns the same shape as omicverse's, so OmicOS's
 `registry_lookup` tool can consume a `socialverse` registry unchanged:
 
