@@ -36,7 +36,7 @@ from ._registry import (  # noqa: F401
 from ._slots import SLOTS, VALID_SLOTS  # noqa: F401
 from ._state import StudyState  # noqa: F401
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 # Import submodules for their side effect: each module's @register calls populate
 # the singleton registry. Wrapped in a guard so a missing optional dep in one

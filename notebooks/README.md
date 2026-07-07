@@ -1,7 +1,9 @@
 # socialverse 教程
 
-19 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
+20 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
 
+> **[20 · 复现方法复杂的顶刊论文:交错采纳 DiD(直接民主与移民归化)](20_reproduction_hh2015_staggered_did.ipynb)** 用 Harvard Dataverse 上**公开的 1211 市镇面板**端到端复现 Liu-Wang-Xu (2024, *AJPS*) 的 HH2015 案例:声明面板设计 → 平行趋势 → **TWFE DiD** → 事件研究 → 稳健性 → 诚实标注 FEct 边界。socialverse 的 **TWFE ATT = +1.339 与论文报告值逐位吻合**;这本也顺带把 DiD 家族升级成**吸收高维固定效应**(千级单位面板可跑)。
+>
 > **[19 · 复现近年顶刊(JPSP 2023)的中介效应](19_reproduction_jpsp2023_mediation.ipynb)** 用作者**公开的原始数据**复现一篇 2023 年 JPSP 论文的核心中介发现,`sv.tl.mediation` 估的间接效应 **ACME≈0.31 [0.08,0.53] 与发表值逐位吻合**——近年顶刊 + 公开数据版的"论文=函数链"。
 >
 > **[18 · 完整复现:Rossi 累犯实验的 Cox 模型](18_reproduction_rossi_cox.ipynb)** 用**真实公开数据**(Rossi 随机实验)端到端复现一项已发表研究的**整套分析**(含时变就业 Cox),socialverse 系数与 Allison (2014) 发表值**逐位吻合(最大偏差 < 0.002)**——"一篇论文 = 一条 socialverse 函数链"的字面证明。
@@ -27,6 +29,7 @@ jupyter lab notebooks/       # 逐格运行;或直接阅读已执行的 .ipynb
 |---|---|---|
 | 17 | [回归底座与因果工具箱:GLM、工具变量、匹配与中介](17_regression_iv_matching_mediation.ipynb) | R `glm`/`ivreg`/`MatchIt`/`mediation` · Stata `logit`/`ivregress`/`psmatch2`/`mediate` |
 | 02 | [用双重差分评估一项政策的因果效应](02_causal_did.ipynb) | pyfixest · R `fixest`/`did` |
+| 20 | [复现顶刊交错采纳 DiD:直接民主与移民归化(HH2015)](20_reproduction_hh2015_staggered_did.ipynb) | Liu-Wang-Xu 2024 AJPS · R `fect`/`did` |
 | 11 | [没有随机分配时,如何识别因果:断点回归与合成控制](11_quasi_experiment.ipynb) | `rdrobust` · `gsynth` |
 | 04 | [把一篇实证论文打包成可复现的复现件](04_econometrics_replication.ipynb) | R `fixest` + 复现管线 |
 

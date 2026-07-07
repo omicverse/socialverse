@@ -139,6 +139,95 @@ def _res_lookup(res, colnames: list[str], name: str) -> int | None:
         return None
 
 
+def _within_fit(y, D, unit, time, groups):
+    """Two-way fixed-effects regression of ``y`` on the columns of ``D``, absorbing
+    unit and time effects by within-transformation.
+
+    Explicit unit dummies are infeasible once a panel has thousands of units — the
+    design matrix becomes huge and rank-deficient and OLS fails (``did`` /
+    ``event_study`` / ``parallel_trends`` all shared this ceiling). This routine
+    demeans ``y`` and each column of ``D`` by unit and time via alternating
+    projections (which handles unbalanced panels), then regresses the residualised
+    outcome on the residualised regressors, exactly as ``reghdfe`` / ``fixest`` do.
+    It returns the coefficient vector plus classical, HC1 and cluster-robust
+    covariance matrices (clustered on ``groups``) with the standard small-sample
+    corrections, so it reproduces the dummy-OLS estimates at scale. ``D`` may be 1-D
+    (single regressor, e.g. ``treat_post``) or 2-D (event-time dummies). Returns
+    ``None`` if the regressors have no residual variation after absorbing the FE.
+    """
+    y = np.asarray(y, dtype=float).ravel()
+    D = np.asarray(D, dtype=float)
+    if D.ndim == 1:
+        D = D[:, None]
+    n, p = D.shape
+    u = pd.factorize(np.asarray(unit))[0]
+    t = pd.factorize(np.asarray(time))[0]
+    n_u, n_t = int(u.max()) + 1, int(t.max()) + 1
+    uc = np.bincount(u).astype(float)
+    tc = np.bincount(t).astype(float)
+
+    def _demean(v: np.ndarray) -> np.ndarray:
+        v = v.astype(float).copy()
+        for _ in range(5000):
+            v0 = v
+            v = v - (np.bincount(u, v) / uc)[u]
+            v = v - (np.bincount(t, v) / tc)[t]
+            if np.max(np.abs(v - v0)) < 1e-11:
+                break
+        return v
+
+    yt = _demean(y)
+    Dt = np.column_stack([_demean(D[:, c]) for c in range(p)])
+    XtX = Dt.T @ Dt
+    if np.linalg.matrix_rank(XtX) < p:
+        return None
+    XtX_inv = np.linalg.pinv(XtX)
+    beta = XtX_inv @ (Dt.T @ yt)
+    e = yt - Dt @ beta
+    k = p + (n_u - 1) + (n_t - 1)  # regressors + absorbed FE parameters
+    dof = max(n - k, 1)
+
+    sigma2 = float(e @ e) / dof
+    V_classical = sigma2 * XtX_inv
+
+    Xe = Dt * e[:, None]
+    V_hc1 = XtX_inv @ (Xe.T @ Xe) @ XtX_inv * (n / dof)
+
+    g = pd.factorize(np.asarray(groups))[0]
+    n_g = int(g.max()) + 1
+    Sg = np.column_stack([np.bincount(g, Xe[:, c], minlength=n_g) for c in range(p)])
+    adj = (n_g / (n_g - 1.0)) * ((n - 1.0) / (n - k)) if n_g > 1 else 1.0
+    V_cluster = XtX_inv @ (Sg.T @ Sg) @ XtX_inv * adj
+
+    return {
+        "beta": beta,
+        "V_classical": V_classical,
+        "V_hc1": V_hc1,
+        "V_cluster": V_cluster,
+        "dof": dof,
+        "df_cluster": n_g - 1,
+        "n": n,
+        "n_clusters": n_g,
+    }
+
+
+def _within_coef(fit: dict, i: int, which: str = "V_cluster") -> dict:
+    """Point estimate + SE + two-sided p + 95% CI for coefficient ``i`` of a
+    :func:`_within_fit` result under covariance spec ``which``."""
+    from scipy import stats
+
+    b = float(fit["beta"][i])
+    se = float(np.sqrt(fit[which][i, i]))
+    df = fit["df_cluster"] if which == "V_cluster" else fit["dof"]
+    if se > 0:
+        p = float(2 * stats.t.sf(abs(b / se), df))
+        tcrit = float(stats.t.ppf(0.975, df))
+        ci = [b - tcrit * se, b + tcrit * se]
+    else:
+        p, ci = float("nan"), [float("nan"), float("nan")]
+    return {"coef": b, "se": se, "p": p, "ci": ci}
+
+
 # ------------------------------------------------------------------ parallel_trends
 @register(
     name="parallel_trends",
@@ -198,41 +287,69 @@ def parallel_trends(state: StudyState, **kwargs: Any) -> StudyState:
         return state
 
     sm = _try_import("statsmodels.api")
-    smf = _try_import("statsmodels.formula.api")
     et_cols = [f"_et_{p}" for p in included]
 
-    unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
-                            prefix="u", drop_first=True, dtype=float)
-    time_d = pd.get_dummies(work[cols["time"]].astype("category"),
-                            prefix="t", drop_first=True, dtype=float)
-    X = pd.concat([work[et_cols].astype(float), unit_d, time_d], axis=1)
-
-    valid = X.notna().all(axis=1) & work[y_col].notna()
-    X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
-
-    res = _fit_ols(y, X, groups)
-    xcols = res._sv_xcols  # includes leading 'const'
-
     pre_coefs: dict[str, tuple[float, float]] = {}
-    pre_idx: list[int] = []
-    for p in pre_bins:
-        j = _res_lookup(res, xcols, f"_et_{p}")
-        if j is not None:
-            pre_coefs[str(p)] = (float(res.params[j]), float(res.bse[j]))
-            pre_idx.append(j)
-
     joint_F: float | None = None
     p_value: float | None = None
-    if pre_idx:
-        R = np.zeros((len(pre_idx), len(res.params)))
-        for r, j in enumerate(pre_idx):
-            R[r, j] = 1.0
-        try:
-            wald = res.f_test(R)
-            joint_F = float(np.ravel(wald.fvalue)[0])
-            p_value = float(wald.pvalue)
-        except Exception:
-            joint_F = p_value = None
+    n_pre = 0
+
+    n_fe = int(work[cols["panel_id"]].nunique()) + int(work[cols["time"]].nunique())
+    if n_fe > 150:
+        # High-dimensional FE: absorb by within-transformation, then jointly test
+        # the pre-period leads with a cluster-robust Wald F.
+        valid = work[et_cols].notna().all(axis=1) & work[y_col].notna()
+        w = work.loc[valid]
+        fit = _within_fit(w[y_col], w[et_cols].to_numpy(float),
+                          w[cols["panel_id"]], w[cols["time"]], w[cols["panel_id"]])
+        pre_pos = [i for i, pbin in enumerate(included) if pbin < -1]
+        if fit is not None:
+            for i in pre_pos:
+                c = _within_coef(fit, i, "V_cluster")
+                pre_coefs[str(included[i])] = (c["coef"], c["se"])
+            n_pre = len(pre_pos)
+            if pre_pos:
+                from scipy import stats
+                b = fit["beta"][pre_pos]
+                V = fit["V_cluster"][np.ix_(pre_pos, pre_pos)]
+                try:
+                    wald = float(b @ np.linalg.solve(V, b))
+                    df1, df2 = len(pre_pos), fit["df_cluster"]
+                    joint_F = wald / df1
+                    p_value = float(stats.f.sf(joint_F, df1, df2))
+                except Exception:
+                    joint_F = p_value = None
+    else:
+        unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
+                                prefix="u", drop_first=True, dtype=float)
+        time_d = pd.get_dummies(work[cols["time"]].astype("category"),
+                                prefix="t", drop_first=True, dtype=float)
+        X = pd.concat([work[et_cols].astype(float), unit_d, time_d], axis=1)
+
+        valid = X.notna().all(axis=1) & work[y_col].notna()
+        X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
+
+        res = _fit_ols(y, X, groups)
+        xcols = res._sv_xcols  # includes leading 'const'
+
+        pre_idx: list[int] = []
+        for p in pre_bins:
+            j = _res_lookup(res, xcols, f"_et_{p}")
+            if j is not None:
+                pre_coefs[str(p)] = (float(res.params[j]), float(res.bse[j]))
+                pre_idx.append(j)
+        n_pre = len(pre_idx)
+
+        if pre_idx:
+            R = np.zeros((len(pre_idx), len(res.params)))
+            for r, j in enumerate(pre_idx):
+                R[r, j] = 1.0
+            try:
+                wald = res.f_test(R)
+                joint_F = float(np.ravel(wald.fvalue)[0])
+                p_value = float(wald.pvalue)
+            except Exception:
+                joint_F = p_value = None
 
     verdict = "pass" if (p_value is not None and p_value > alpha) else \
               ("fail" if p_value is not None else "unknown")
@@ -241,7 +358,7 @@ def parallel_trends(state: StudyState, **kwargs: Any) -> StudyState:
         "joint_F": joint_F,
         "p_value": p_value,
         "pre_coefs": pre_coefs,
-        "n_pre": len(pre_idx),
+        "n_pre": n_pre,
         "outcome": y_col,
         "alpha": alpha,
         "note": ("未拒绝平行趋势(p>{:.3g})".format(alpha) if verdict == "pass"
@@ -323,47 +440,80 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
         return _empty("找不到结果变量(outcome)")
 
     sm = _try_import("statsmodels.api")
-    unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
-                            prefix="u", drop_first=True, dtype=float)
-    time_d = pd.get_dummies(work[cols["time"]].astype("category"),
-                            prefix="t", drop_first=True, dtype=float)
-    X = pd.concat([work[["_treat_post"]].astype(float), unit_d, time_d], axis=1)
 
-    valid = X.notna().all(axis=1) & work[y_col].notna()
-    X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
+    # High-dimensional fixed effects (many units) make explicit dummies infeasible —
+    # the design matrix is huge and rank-deficient and OLS fails. Above a threshold
+    # of absorbed levels, switch to within-transformation (reghdfe/fixest-style);
+    # small panels keep the explicit-dummy path so nothing about existing behaviour
+    # changes for the common toy/teaching cases.
+    n_units = int(work[cols["panel_id"]].nunique())
+    n_times = int(work[cols["time"]].nunique())
+    use_within = (n_units + n_times) > 150
 
-    res = _fit_ols(y, X, groups)
-    xcols = res._sv_xcols
-    j = _res_lookup(res, xcols, "_treat_post")
+    if use_within:
+        valid = work["_treat_post"].notna() & work[y_col].notna()
+        w = work.loc[valid]
+        fit = _within_fit(w[y_col], w["_treat_post"].to_numpy(float),
+                          w[cols["panel_id"]], w[cols["time"]], w[cols["panel_id"]])
+        if fit is None:
+            return _empty("处理×时点交互项无法辨识(共线或无变异)")
+        cl = _within_coef(fit, 0, "V_cluster")
+        att, se, p = cl["coef"], cl["se"], cl["p"]
+        ci_lo, ci_hi = cl["ci"]
+        n_used, n_clusters = fit["n"], fit["n_clusters"]
+        estimator = "twfe_within_absorb_cluster"
+        specs = [
+            {"spec": "classical", "att": att, **{k: _within_coef(fit, 0, "V_classical")[k]
+                                                 for k in ("se", "p")}},
+            {"spec": "HC1_robust", "att": att, **{k: _within_coef(fit, 0, "V_hc1")[k]
+                                                  for k in ("se", "p")}},
+            {"spec": "cluster_panel", "att": att, "se": se, "p": p},
+        ]
+    else:
+        unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
+                                prefix="u", drop_first=True, dtype=float)
+        time_d = pd.get_dummies(work[cols["time"]].astype("category"),
+                                prefix="t", drop_first=True, dtype=float)
+        X = pd.concat([work[["_treat_post"]].astype(float), unit_d, time_d], axis=1)
 
-    if j is None:
-        return _empty("处理×时点交互项无法辨识(共线或无变异)")
+        valid = X.notna().all(axis=1) & work[y_col].notna()
+        X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
 
-    att = float(res.params[j])
-    se = float(res.bse[j])
-    p = float(res.pvalues[j])
-    ci_lo, ci_hi = (float(x) for x in res.conf_int()[j])
+        res = _fit_ols(y, X, groups)
+        xcols = res._sv_xcols
+        j = _res_lookup(res, xcols, "_treat_post")
 
-    # robustness: re-fit the same design under alternative covariance specs.
-    Xc = sm.add_constant(X, has_constant="add")
-    base = sm.OLS(np.asarray(y, float), np.asarray(Xc, float))
-    specs: list[dict[str, Any]] = []
-    for label, kw in (
-        ("classical", {}),
-        ("HC1_robust", {"cov_type": "HC1"}),
-        ("cluster_panel", {"cov_type": "cluster",
-                           "cov_kwds": {"groups": np.asarray(groups)}}),
-    ):
-        try:
-            r = base.fit(**kw)
-            specs.append({
-                "spec": label,
-                "att": float(r.params[j]),
-                "se": float(r.bse[j]),
-                "p": float(r.pvalues[j]),
-            })
-        except Exception:
-            specs.append({"spec": label, "att": None, "se": None, "p": None})
+        if j is None:
+            return _empty("处理×时点交互项无法辨识(共线或无变异)")
+
+        att = float(res.params[j])
+        se = float(res.bse[j])
+        p = float(res.pvalues[j])
+        ci_lo, ci_hi = (float(x) for x in res.conf_int()[j])
+        n_used = int(valid.sum())
+        n_clusters = int(pd.unique(groups).size)
+        estimator = "twfe_ols_cluster"
+
+        # robustness: re-fit the same design under alternative covariance specs.
+        Xc = sm.add_constant(X, has_constant="add")
+        base = sm.OLS(np.asarray(y, float), np.asarray(Xc, float))
+        specs = []
+        for label, kw in (
+            ("classical", {}),
+            ("HC1_robust", {"cov_type": "HC1"}),
+            ("cluster_panel", {"cov_type": "cluster",
+                               "cov_kwds": {"groups": np.asarray(groups)}}),
+        ):
+            try:
+                r = base.fit(**kw)
+                specs.append({
+                    "spec": label,
+                    "att": float(r.params[j]),
+                    "se": float(r.bse[j]),
+                    "p": float(r.pvalues[j]),
+                })
+            except Exception:
+                specs.append({"spec": label, "att": None, "se": None, "p": None})
 
     causal_note = ("关联非因果(平行趋势未过)" if pt == "fail"
                    else "因果 ATT(平行趋势通过)" if pt == "pass"
@@ -374,10 +524,10 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
         "se": se,
         "ci": [ci_lo, ci_hi],
         "p": p,
-        "n": int(valid.sum()),
-        "n_clusters": int(pd.unique(groups).size),
+        "n": n_used,
+        "n_clusters": n_clusters,
         "outcome": y_col,
-        "estimator": "twfe_ols_cluster",
+        "estimator": estimator,
         "parallel_trends": pt,
         "note": causal_note,
     }
@@ -439,32 +589,49 @@ def event_study(state: StudyState, **kwargs: Any) -> StudyState:
 
     sm = _try_import("statsmodels.api")
     et_cols = [f"_et_{p}" for p in included]
-    unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
-                            prefix="u", drop_first=True, dtype=float)
-    time_d = pd.get_dummies(work[cols["time"]].astype("category"),
-                            prefix="t", drop_first=True, dtype=float)
-    X = pd.concat([work[et_cols].astype(float), unit_d, time_d], axis=1)
-
-    valid = X.notna().all(axis=1) & work[y_col].notna()
-    X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
-
-    res = _fit_ols(y, X, groups)
-    xcols = res._sv_xcols
-
     coefs: dict[str, tuple[float, float]] = {str(base): (0.0, 0.0)}  # normalized base
-    for p in included:
-        j = _res_lookup(res, xcols, f"_et_{p}")
-        if j is not None:
-            coefs[str(p)] = (float(res.params[j]), float(res.bse[j]))
+
+    n_fe = int(work[cols["panel_id"]].nunique()) + int(work[cols["time"]].nunique())
+    if n_fe > 150:
+        # High-dimensional FE: absorb by within-transformation (dummies infeasible).
+        valid = work[et_cols].notna().all(axis=1) & work[y_col].notna()
+        w = work.loc[valid]
+        fit = _within_fit(w[y_col], w[et_cols].to_numpy(float),
+                          w[cols["panel_id"]], w[cols["time"]], w[cols["panel_id"]])
+        if fit is not None:
+            for i, pbin in enumerate(included):
+                c = _within_coef(fit, i, "V_cluster")
+                coefs[str(pbin)] = (c["coef"], c["se"])
+        n_used, n_clusters = (fit["n"], fit["n_clusters"]) if fit else (int(valid.sum()), 0)
+        estimator = "event_study_within_absorb_cluster"
+    else:
+        unit_d = pd.get_dummies(work[cols["panel_id"]].astype("category"),
+                                prefix="u", drop_first=True, dtype=float)
+        time_d = pd.get_dummies(work[cols["time"]].astype("category"),
+                                prefix="t", drop_first=True, dtype=float)
+        X = pd.concat([work[et_cols].astype(float), unit_d, time_d], axis=1)
+
+        valid = X.notna().all(axis=1) & work[y_col].notna()
+        X, y, groups = X.loc[valid], work.loc[valid, y_col], work.loc[valid, cols["panel_id"]]
+
+        res = _fit_ols(y, X, groups)
+        xcols = res._sv_xcols
+
+        for p in included:
+            j = _res_lookup(res, xcols, f"_et_{p}")
+            if j is not None:
+                coefs[str(p)] = (float(res.params[j]), float(res.bse[j]))
+        n_used, n_clusters = int(valid.sum()), int(pd.unique(groups).size)
+        estimator = "event_study_ols_cluster"
 
     ordered = {k: coefs[k] for k in sorted(coefs, key=lambda s: int(s))}
     state.write("models", "event_study", {
         "coefs": ordered,
         "base": base,
         "outcome": y_col,
-        "n": int(valid.sum()),
-        "n_clusters": int(pd.unique(groups).size),
-        "estimator": "event_study_ols_cluster",
+        "n": n_used,
+        "n_clusters": n_clusters,
+        "estimator": estimator,
         "note": "各相对期动态效应(base={} 归一化为 0)".format(base),
     })
     return state
