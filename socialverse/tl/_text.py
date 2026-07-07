@@ -31,8 +31,6 @@ import importlib
 import re
 from typing import Any
 
-import networkx as nx
-
 from .._registry import register
 from .._state import StudyState
 
@@ -214,6 +212,8 @@ def _build_stemma(
     groups them — an operational (unrooted) proxy for the genealogical tree of
     the method of common errors. Rooted nominally at the base witness.
     """
+    import networkx as nx  # optional backend — imported lazily so the module registers without it
+
     ids = list(profiles)
     g = nx.Graph()
     g.add_nodes_from(ids)

@@ -40,12 +40,24 @@ from typing import Any
 
 import numpy as np
 
-# Force a non-interactive backend *before* pyplot is imported anywhere, so nothing
-# ever tries to open a window (headless CI / kernel safe).
-import matplotlib
+# matplotlib is an optional backend — import it lazily so these figure functions
+# still REGISTER on a bare install (numpy+pandas only). A missing backend surfaces
+# only if a figure is actually drawn, with a clear install hint. The Agg backend is
+# forced *before* pyplot is imported so nothing ever opens a window (headless safe).
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: E402
+except ImportError:  # pragma: no cover
+    class _MissingMpl:
+        def __getattr__(self, _name):
+            raise ImportError(
+                "matplotlib is required for socialverse figures — "
+                "install it with: pip install 'socialverse[figure]'"
+            )
+
+    plt = _MissingMpl()  # type: ignore[assignment]
 
 from .._registry import register  # noqa: E402
 from .._state import StudyState  # noqa: E402

@@ -8,14 +8,20 @@ version = "0.1.0"
 description = "A structured, dependency-annotated function registry for the social sciences and humanities — the omicverse registry mechanism, ported off AnnData onto a light StudyState vocabulary."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "CC-BY-4.0" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "OmicOS / socialverse contributors" }]
 keywords = ["social-science", "computational-social-science", "digital-humanities",
             "function-registry", "reproducibility", "agent", "causal-inference"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
+    "Operating System :: OS Independent",
 ]
 
 # Hard deps are deliberately minimal — the whole point is a light registry, not a
@@ -24,6 +30,12 @@ dependencies = [
     "numpy>=1.23",
     "pandas>=1.5",
 ]
+
+[project.urls]
+Homepage = "https://github.com/omicverse/socialverse"
+Repository = "https://github.com/omicverse/socialverse"
+Documentation = "https://github.com/omicverse/socialverse/tree/main/notebooks"
+Issues = "https://github.com/omicverse/socialverse/issues"
 
 [project.optional-dependencies]
 # federated analysis backends — installed only for the chains you use (lazy-imported)

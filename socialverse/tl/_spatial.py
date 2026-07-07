@@ -35,7 +35,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import optimize
 
 from .._registry import register
 from .._state import StudyState
@@ -375,6 +374,8 @@ def _sar_ml(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict[str, Any]:
     invertibility range ``(1/min_ev, 1/max_ev)`` of ``W`` and found by Brent's
     method on the concentrated negative log-likelihood.
     """
+    from scipy import optimize  # optional backend — imported lazily so the module registers without it
+
     n = y.shape[0]
     Wy = W @ y
     ev = np.linalg.eigvals(W).real
