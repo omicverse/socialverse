@@ -8,6 +8,9 @@ from ._fect import *          # noqa: F401,F403
 from ._dag import *           # noqa: F401,F403
 from ._dml import *           # noqa: F401,F403
 from ._decomp import *       # noqa: F401,F403
+from ._did_robust import *   # noqa: F401,F403
+from ._bartik import *       # noqa: F401,F403
+from ._hte import *          # noqa: F401,F403
 from ._moderndid import *     # noqa: F401,F403
 from ._econ import *          # noqa: F401,F403
 from ._regression import *    # noqa: F401,F403

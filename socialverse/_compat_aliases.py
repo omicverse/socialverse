@@ -43,6 +43,11 @@ PY_ALIASES: dict[str, list[str]] = {
     "bacon_decompose": ["py-bacondecomp", "py-ddtiming"],                        # (R/S) bacondecomp
     "oaxaca": ["py-oaxaca_blinder", "py-blinder_oaxaca", "py-rif_decompose"],     # (R/S) oaxaca (py-oaxaca→demographic decomposition)
     "regtable": ["py-modelsummary", "py-stargazer", "py-regtable"],              # (R) modelsummary/stargazer
+    "synth_did": ["py-synth_did", "py-synthdid_est"],                            # (R) synthdid (py-sdid→synthetic_control)
+    "honest_did": ["py-honestdid", "py-honest_did", "py-rambachan_roth"],        # (R) HonestDiD
+    "bartik_iv": ["py-bartik", "py-shiftshare", "py-ssaggregate"],               # (R) ShiftShareSE
+    "metalearners": ["py-metalearners", "py-tlearner", "py-xlearner", "py-slearner"],  # causalml/EconML
+    "qte": ["py-qte", "py-quantile_te", "py-rifqreg"],                            # (S) qte (R) quantreg
     "rdd": ["py-rdrobust", "py-rdbwselect", "py-rddensity"],                   # (S/R) rdrobust
     "synthetic_control": ["py-synth", "py-synth_runner", "py-sdid",            # (S)
                           "py-gsynth", "py-augsynth", "py-synthdid"],          # (R)

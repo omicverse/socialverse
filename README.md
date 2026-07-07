@@ -75,9 +75,14 @@ sv.registry.find("mixed")              # bare command also fuzzy-matches
 | 因果图识别 + 反驳(DoWhy 四步) | DAG→后门/前门/IV 识别估计量→安慰剂/共因/子样本/敏感性反驳 | (手搭) | — | `dagitty`,`DoWhy` | `sv.tl.dag_identify` + `sv.tl.dag_refute` | 因果图显式化识别假设 + 反驳测试(Pearl do-演算) —— Pearl; Sharma & Kiciman (DoWhy 2020) |
 | 双重机器学习 DML / CATE | cross-fitting + 正交残差回归估 ATE 与线性 CATE θ(x) | `ddml` / `pdslasso` | — | `DoubleML`,`EconML` | `sv.tl.dml` | DML 用 ML 去混杂估异质处理效应 —— Chernozhukov et al. (Econometrics J. 2018) |
 | 因果森林 / ForestDML | R-learner 森林最终阶段的非参 per-unit CATE + 特征重要度 | — | — | `grf::causal_forest`,`EconML` | `sv.tl.causal_forest` | 因果森林估计个体处理效应异质性 —— Wager & Athey (JASA 2018);Nie & Wager (2021) |
+| 元学习器 S/T/X-learner | 用基学习器估 CATE(模型无关) | — | — | `causalml`,`EconML` | `sv.tl.metalearners` | 元学习器估条件平均处理效应 CATE —— Künzel et al. (PNAS 2019) |
+| 分位处理效应 QTE | 结果分布各分位的处理效应(可 IPW) | `qte` | — | `quantreg` | `sv.tl.qte` | 分位处理效应刻画政策的分布/不平等影响 —— Firpo (Econometrica 2007) |
+| Honest-DiD 平行趋势敏感性 | 事件研究→ΔRM 稳健 CI vs M + breakdown M | — | — | `HonestDiD` | `sv.tl.honest_did` | 诚实 DiD 报告结论对平行趋势违背的稳健性 —— Rambachan & Roth (RES 2023) |
+| 合成双重差分 SDID | 单位权重(合成控制)+ 时间权重(DiD) | `sdid` | — | `synthdid` | `sv.tl.synth_did` | 合成 DiD 比经典 SCM/TWFE 更稳健 —— Arkhangelsky et al. (AER 2021) |
 | RDD(断点回归) | 断点处局部多项式跳跃 | `rdrobust` / `rdplot` | — | `rdrobust::rdrobust` | `sv.tl.rdd` + `sv.pl.rdd_plot` | 险胜选举断点识别当选者特征的下游效应 —— Marshall (AJPS 2024) |
 | 合成控制 | 加权对照拟合反事实路径 | `synth` / `synth_runner` | — | `Synth`,`augsynth`,`gsynth` | `sv.tl.synthetic_control` + `sv.pl.synth_path` | 合成控制评估洛杉矶大型养老机构条例的前后效应 —— Frochen, Rodnyansky & Ailshire (2024) |
 | 工具变量 / 2SLS | 份额×供给外生变异两阶段 | `ivregress` / `ivreg2` | `2SLS` | `AER::ivreg`,`fixest` | `sv.tl.iv_regress` | Shift-share IV 识别大迁徙对代际流动的因果影响 —— Derenoncourt (AER 2022) |
+| Shift-share / Bartik IV | 本地份额×全国冲击构造 IV → 2SLS | `bartik` | — | `ShiftShareSE` | `sv.tl.bartik_iv` | 移份额工具识别地方经济冲击的因果效应 —— Goldsmith-Pinkham, Sorkin & Swift (AER 2020) |
 | 倾向得分匹配 / PSM | 倾向得分近邻匹配平衡协变量 | `teffects psmatch` / `psmatch2` | `FUZZY`(扩展) | `MatchIt::matchit` | `sv.tl.psm` | (教材经典:MatchIt LaLonde 就业培训项目 ATT 估计,Ho–Imai–King–Stuart 2011 JSS) |
 | 中介分析 | 直接/间接效应 bootstrap 分解 | `mediate` / `sgmediation` | PROCESS macro | `mediation::mediate` | `sv.tl.mediation` | 预注册实验+PROCESS bootstrap:来源→传输感→信念的间接效应 —— Chu & Liu (Journal of Communication 2024) |
 | 广义线性模型 GLM | 连接函数+指数族似然 | `glm` / `logit` / `poisson` | `GENLIN` / `LOGISTIC` | `stats::glm` | `sv.tl.glm` | OLS→家庭FE→儿童FE 三层递进估计手足数与发展 —— Yu & Yan (ASR 2023) |
