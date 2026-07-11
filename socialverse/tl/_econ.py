@@ -267,6 +267,92 @@ def _twfe_statsmodels(
     }
 
 
+def _twfe_pyfixest_port(
+    df: pd.DataFrame,
+    outcome: str,
+    treatment: str,
+    controls: list[str],
+    fe: list[str],
+    cluster: str | None,
+) -> dict[str, Any] | None:
+    """Faithful within-estimator fast path via the vendored ``external.pyfixest``.
+
+    This is a pure-Python reconstruction of R ``fixest::feols`` proven to match R
+    to ~1e-6, replacing the ad-hoc numeric path. It requires at least one FE
+    dimension and a cluster variable (the port only implements the clustered,
+    fixed-effects case). Returns ``None`` when its preconditions are unmet or on
+    any error, so the caller falls back to the pre-existing implementations.
+
+    The port estimates *all* right-hand-side slopes jointly; we extract the row
+    corresponding to ``treatment`` (the first regressor) to fill the same dict
+    shape the module already emits.
+    """
+    # port covers the FE + clustered case only
+    fe_cols = [f for f in fe if f in df.columns]
+    if not fe_cols or not cluster or cluster not in df.columns:
+        return None
+    if treatment not in df.columns:
+        return None
+    try:
+        from ..external.pyfixest import feols as _port_feols
+
+        rhs_cols = [treatment] + [c for c in controls if c in df.columns and c != treatment]
+
+        # Build a clean estimation frame. Outcome and numeric regressors are
+        # coerced to float; FE/cluster grouping labels are kept AS-IS (never
+        # numeric-coerced) so string/categorical group ids survive factorization.
+        work = df.copy()
+        y_ser = pd.to_numeric(work[outcome], errors="coerce")
+        x_df = work[rhs_cols].apply(pd.to_numeric, errors="coerce")
+
+        # rows must be complete across outcome + regressors + FE + cluster
+        group_cols = list(dict.fromkeys(fe_cols + [cluster]))
+        mask = y_ser.notna() & x_df.notna().all(axis=1)
+        for gc in group_cols:
+            mask &= work[gc].notna()
+        if not bool(mask.any()):
+            return None
+
+        y = y_ser[mask].to_numpy(dtype=float)
+        X = x_df[mask].to_numpy(dtype=float)
+        n = int(mask.sum())
+        if n <= X.shape[1]:
+            return None
+
+        # FE grouping vectors — pass labels through as object arrays (the port
+        # factorizes them); do NOT coerce to numeric.
+        fe_arrays = [work.loc[mask, fc].to_numpy() for fc in fe_cols]
+        fe_arg = fe_arrays if len(fe_arrays) > 1 else fe_arrays[0]
+        cluster_arr = work.loc[mask, cluster].to_numpy()
+
+        res = _port_feols(y, X, fe_arg, cluster_arr)
+
+        coef = float(res["coef"][0])
+        se = float(res["se"][0])
+        tstat = float(coef / se) if se else float("nan")
+        # two-sided p-value from a normal approximation (fixest reports t with a
+        # G-1 df; the pre-existing paths already approximate with 1.96 CIs, so we
+        # stay consistent and use the normal tail here).
+        from math import erfc, sqrt
+
+        pvalue = float(erfc(abs(tstat) / sqrt(2.0))) if tstat == tstat else float("nan")
+        return {
+            "coef": coef,
+            "se": se,
+            "tstat": tstat,
+            "pvalue": pvalue,
+            "ci_low": coef - 1.96 * se,
+            "ci_high": coef + 1.96 * se,
+            "n": int(res.get("nobs", n)),
+            "se_kind": f"CRV1({cluster})",
+            "backend": "pyfixest",
+            "within_r2": float(res.get("within_r2", float("nan"))),
+            "n_clusters": int(res.get("n_clusters", 0)),
+        }
+    except Exception:
+        return None
+
+
 def _twfe_pyfixest(
     df: pd.DataFrame,
     outcome: str,
@@ -332,8 +418,10 @@ def _robustness_matrix(
     ]
     records = []
     for label, ctrls, fes, clu in specs:
-        est = _twfe_pyfixest(df, outcome, treatment, ctrls, fes, clu) or _twfe_statsmodels(
-            df, outcome, treatment, ctrls, fes, clu
+        est = (
+            _twfe_pyfixest_port(df, outcome, treatment, ctrls, fes, clu)
+            or _twfe_pyfixest(df, outcome, treatment, ctrls, fes, clu)
+            or _twfe_statsmodels(df, outcome, treatment, ctrls, fes, clu)
         )
         stars = ""
         p = est.get("pvalue", float("nan"))
@@ -488,9 +576,11 @@ def replicate(state: StudyState, **kwargs: Any) -> StudyState:
 
     # 3. baseline TWFE --------------------------------------------------------
     if outcome and treatment:
-        baseline = _twfe_pyfixest(
-            df, outcome, treatment, controls, fe, cluster
-        ) or _twfe_statsmodels(df, outcome, treatment, controls, fe, cluster)
+        baseline = (
+            _twfe_pyfixest_port(df, outcome, treatment, controls, fe, cluster)
+            or _twfe_pyfixest(df, outcome, treatment, controls, fe, cluster)
+            or _twfe_statsmodels(df, outcome, treatment, controls, fe, cluster)
+        )
     else:
         baseline = {"coef": float("nan"), "se": float("nan"), "backend": "unavailable", "n": 0}
     baseline["schema"] = schema

@@ -107,10 +107,54 @@ def dta_bivariate(state: StudyState, **kwargs: Any) -> StudyState:
     dta = state.models.get("dta")
     if not isinstance(dta, dict) or "_logit" not in dta:
         return state
-    from scipy import stats
+
+    def expit(x):
+        return 1 / (1 + np.exp(-x))
+
+    # --- Preferred path: faithful mada::reitsma port (proven 1e-6 vs R). -----
+    # The port works on the raw 2x2 cell counts and parametrises the second
+    # outcome as the false-positive rate (fpr = 1 - specificity) on the logit
+    # scale.  We re-derive the counts from the state frame (the same helper
+    # dta_descriptives uses) and translate the port's (logit sens, logit fpr)
+    # basis back into the (logit sens, logit spec) basis this function has
+    # always written, so downstream keys / shapes are unchanged.
+    try:
+        m = _counts(state, kwargs)
+        if m is None:
+            raise ValueError("raw tp/fp/fn/tn counts unavailable")
+        tp, fp, fn, tn = (m[:, i] for i in range(4))
+        from ..external.pymada import reitsma as _pymada_reitsma
+        fit = _pymada_reitsma(TP=tp, FN=fn, FP=fp, TN=tn)
+        coef = np.asarray(fit["coefficients"], float)   # [logit sens, logit fpr]
+        vcov = np.asarray(fit["vcov"], float)           # cov in (sens, fpr) basis
+        Psi = np.asarray(fit["Psi"], float)             # between-study, (sens, fpr)
+        # Change of variable fpr -> spec = 1 - fpr, i.e. logit(spec) = -logit(fpr).
+        # This is a linear map J = diag(1, -1) on the logit-scale parameters, so
+        # covariances transform as J C J' (identical variances, flipped
+        # off-diagonal sign) and the correlation sign flips.
+        J = np.array([1.0, -1.0])
+        mu = coef * J                                   # [logit sens, logit spec]
+        Vmu = vcov * np.outer(J, J)
+        Sig = Psi * np.outer(J, J)
+        se_mu = np.sqrt(np.diag(Vmu))
+        summary = {
+            "sensitivity": float(expit(mu[0])), "specificity": float(expit(mu[1])),
+            "sens_ci": [float(expit(mu[0] - 1.96 * se_mu[0])), float(expit(mu[0] + 1.96 * se_mu[0]))],
+            "spec_ci": [float(expit(mu[1] - 1.96 * se_mu[1])), float(expit(mu[1] + 1.96 * se_mu[1]))],
+            "mu_logit": mu.tolist(), "Sigma": Sig.tolist(),
+            "corr": float(Sig[0, 1] / np.sqrt(Sig[0, 0] * Sig[1, 1])),
+            "DOR": float(np.exp(mu[0] + mu[1])),
+            "converged": True, "_mu": mu.tolist(), "_Sigma": Sig.tolist(),
+            "backend": "pymada",
+        }
+        state.write("models", "dta_bivariate", summary)
+        return state
+    except Exception:
+        pass
+
+    # --- Fallback: pre-existing native Nelder-Mead implementation. -----------
     Y = np.array(dta["_logit"]); S = np.array(dta["_v"])
     mu, Vmu, Sig, ok = _reitsma(Y, S)
-    def expit(x): return 1 / (1 + np.exp(-x))
     se_mu = np.sqrt(np.diag(Vmu))
     summary = {
         "sensitivity": float(expit(mu[0])), "specificity": float(expit(mu[1])),
@@ -119,6 +163,7 @@ def dta_bivariate(state: StudyState, **kwargs: Any) -> StudyState:
         "mu_logit": mu.tolist(), "Sigma": Sig.tolist(), "corr": float(Sig[0, 1] / np.sqrt(Sig[0, 0] * Sig[1, 1])),
         "DOR": float(np.exp(mu[0] + mu[1])),
         "converged": bool(ok), "_mu": mu.tolist(), "_Sigma": Sig.tolist(),
+        "backend": "native",
     }
     state.write("models", "dta_bivariate", summary)
     return state

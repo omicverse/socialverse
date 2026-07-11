@@ -270,10 +270,68 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
     loadings_out: dict[str, dict[str, float]] = {}
     fit: dict[str, Any] = {}
 
+    # ---- pylavaan faithful ML-CFA (preferred, gated 1e-6 vs R) ------------
+    # Delegate the exact normal-theory ML confirmatory factor analysis to the
+    # in-tree pylavaan reconstruction. It fits on the RAW (unstandardized) data
+    # with marker-variable identification and returns both unstandardized and
+    # standardized (std.all) loadings plus lavaan's fit measures. We report the
+    # standardized loadings to preserve the correlation-metric convention this
+    # function has always written, and map the port's fit measures into the
+    # exact ``fit`` keys downstream code + tests depend on.
+    used_pylavaan = False
+    try:
+        from ..external.pylavaan import cfa as _pylavaan_cfa
+
+        model_desc = "\n".join(
+            f"{f} =~ " + " + ".join(cols) for f, cols in spec.items()
+        )
+        # Feed the already complete-cased numeric matrix (columns == ``items``)
+        # as a name->array mapping so the port's N matches this function's ``n``
+        # and no label/grouping column is ever numeric-coerced (only the item
+        # columns are passed, each already float via ``_numeric_matrix``).
+        data_map = {it: X[:, j] for j, it in enumerate(items)}
+        _res = _pylavaan_cfa(model_desc, data_map)
+
+        # loadings: standardized (std.all) rows, keyed factor -> item -> value
+        _rows = _res.parameter_estimates()
+        _pl_loadings: dict[str, dict[str, float]] = {}
+        for _r in _rows:
+            if _r.get("op") == "=~":
+                _pl_loadings.setdefault(str(_r["lhs"]), {})[str(_r["rhs"])] = float(
+                    _r["std_all"]
+                )
+        _fm = _res.fit_measures()
+        if _pl_loadings:
+            loadings_out = _pl_loadings
+            fit = {
+                "CFI": float(_fm["cfi"]),
+                "RMSEA": float(_fm["rmsea"]),
+                "SRMR": float(_fm["srmr"]),
+                "chi2": float(_fm["chisq"]),
+                "df": float(_fm["df"]),
+                "F_ml": float(2.0 * _fm["fmin"]),
+                "n": n,
+                "n_params": int(_res.model.npar),
+                "TLI": float(_fm["tli"]),
+                "baseline_chi2": float(_fm["baseline_chisq"]),
+                "baseline_df": float(_fm["baseline_df"]),
+                "backend": "pylavaan",
+            }
+            # factor correlation matrix (Φ), mirroring the multi-factor fallback
+            # so consumers that read ``fit["factor_correlation"]`` still find it.
+            _psi = _res.model.matrices(_res.theta)[2]
+            _psd = np.sqrt(np.clip(np.diag(_psi), 1e-12, None))
+            _phi = _psi / np.outer(_psd, _psd)
+            fit["factor_correlation"] = np.atleast_2d(_phi).tolist()
+            backend = "pylavaan"
+            used_pylavaan = True
+    except Exception:
+        used_pylavaan = False
+
     # ---- optional semopy champion -----------------------------------------
     semopy = _try_import("semopy")
     used_semopy = False
-    if semopy is not None:
+    if not used_pylavaan and semopy is not None:
         try:
             lines = []
             for f, cols in spec.items():
@@ -306,7 +364,7 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
             used_semopy = False
 
     # ---- statsmodels / numpy ML fallback ----------------------------------
-    if not used_semopy:
+    if not used_pylavaan and not used_semopy:
         backend = "path_ml_statsmodels"
         loadings: dict[str, np.ndarray] = {}
         uniq: dict[str, np.ndarray] = {}
@@ -348,9 +406,10 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
         "backend": "semopy" if used_semopy else backend,
         "n": n,
         "items": items,
-        "note": ("exact ML-CFA (single factor)" if len(spec) == 1 and not used_semopy
-                 else ("semopy ML-SEM" if used_semopy
-                       else "block-wise ML loadings + estimated Φ (honest approximation)")),
+        "note": ("exact ML-CFA (pylavaan, marker-variable ML; gated 1e-6 vs R lavaan)" if used_pylavaan
+                 else ("exact ML-CFA (single factor)" if len(spec) == 1 and not used_semopy
+                       else ("semopy ML-SEM" if used_semopy
+                             else "block-wise ML loadings + estimated Φ (honest approximation)"))),
         "mean_loading": float(np.mean(all_loadings)) if all_loadings else float("nan"),
         "prop_positive": float(np.mean([v > 0 for v in all_loadings])) if all_loadings else float("nan"),
     }

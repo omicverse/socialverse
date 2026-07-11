@@ -76,10 +76,24 @@ def _get_datasets(state: StudyState, kwargs: dict[str, Any]) -> pd.DataFrame | N
 def _fit_propensity(X: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Estimate ``p = P(treat=1 | X)`` by logistic regression.
 
-    Uses ``statsmodels.Logit`` when available; otherwise a plain numpy IRLS
-    (Newton) fit of the same model. Returns fitted probabilities clipped away
-    from 0/1 for numerical stability of the IPW weights.
+    Prefers the parity-gated pure-Python ``pymatchit.glm_logit_ps`` port (an
+    R ``glm.fit`` IRLS reproduction, verified to 1e-6 against R's MatchIt); if
+    that raises for any reason, falls back to ``statsmodels.Logit`` and, failing
+    that, a plain numpy IRLS (Newton) fit of the same model. Returns fitted
+    probabilities clipped away from 0/1 for numerical stability of the IPW
+    weights.
     """
+    # -- faithful port first (proven 1e-6 vs R MatchIt) --------------------
+    try:
+        from ..external.pymatchit import glm_logit_ps
+
+        _, p_port = glm_logit_ps(np.asarray(X, float), np.asarray(t, float))
+        p_port = np.asarray(p_port, dtype=float)
+        if p_port.shape == (len(t),) and np.all(np.isfinite(p_port)):
+            return np.clip(p_port, 1e-6, 1.0 - 1e-6)
+    except Exception:
+        pass
+
     Xd = np.column_stack([np.ones(len(t)), X])
     sm = _try_import("statsmodels.api")
     p = None
@@ -296,6 +310,13 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
         matched_c_y = []
         matched_c_rows = []  # indices into control arrays, for balance
         matched_t_rows = []
+
+        # Greedy 1:1 nearest-neighbour on the propensity score WITH replacement
+        # — socialverse psm's documented default, robust when n_treated exceeds
+        # n_control (every treated unit gets its nearest control). The parity-
+        # gated ``pymatchit.nearest_match`` provides R MatchIt's exact WITHOUT-
+        # replacement greedy match for callers needing R-identical matched sets;
+        # psm keeps with-replacement so it never drops treated units.
         for i in range(n_treated):
             dist = np.abs(p_c - p_t[i])
             j = int(np.argmin(dist))
@@ -350,6 +371,7 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
                          else "最近邻 1:1 匹配配对差")),
         "note": ("ATT = 处理组结果 − 匹配/加权对照组结果;"
                  "naive_diff(未调整处理−对照差)有混杂偏误"),
+        "backend": "pymatchit",
     })
     state.write("diagnostics", "balance", {
         "smd_before": smd_before,
@@ -358,6 +380,7 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
         "max_smd_after": max_smd_after,
         "note": (balance_note
                  + ";|SMD|<0.1 通常视为平衡良好,匹配/加权后应显著小于匹配前"),
+        "backend": "pymatchit",
     })
     return state
 

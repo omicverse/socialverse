@@ -206,7 +206,56 @@ def life_table(state: StudyState, **kwargs: Any) -> StudyState:
     # guard against NaN widths
     width = np.where(np.isfinite(width) & (width > 0), width, 1.0)
 
-    lt = _build_life_table(mx, width, radix=radix)
+    # Prefer the parity-gated pydemography port (faithful demography:::lt).
+    # It supports single-year (agegroup=1) or the standard 1,4,5,5,... 5-year
+    # schedule (agegroup=5). Delegate when the supplied widths match one of
+    # those schedules; otherwise fall back to the pre-existing builder. The
+    # port works on a radix of 1.0, so lx/ndx/nLx/Tx are scaled by ``radix``.
+    lt = None
+    _backend = None
+    try:
+        _sex = str(kwargs.get("sex", "total")).lower()
+        if _sex not in ("female", "male", "total"):
+            _sex = "total"
+        _startage = int(kwargs.get("startage", 0))
+        _w = np.asarray(width, dtype=float)
+        _n = _w.shape[0]
+        _agegroup = None
+        if _n >= 1 and np.allclose(_w[: _n - 1] if _n > 1 else _w, 1.0):
+            _agegroup = 1
+        elif _n >= 3 and _startage == 0 and np.isclose(_w[0], 1.0) \
+                and np.isclose(_w[1], 4.0) and np.allclose(_w[2: _n - 1], 5.0):
+            _agegroup = 5
+        if _agegroup is not None and np.all(np.isfinite(mx)):
+            from ..external.pydemography import life_table as _pd_life_table
+            _p = _pd_life_table(mx, sex=_sex, startage=_startage, agegroup=_agegroup)
+            _lx = _p["lx"] * radix
+            _dx = _p["dx"] * radix
+            _Lx = _p["Lx"] * radix
+            _Tx = _p["Tx"] * radix
+            # Keep the *supplied* interval widths for the reported ``n`` column
+            # (the port marks the open interval nx=inf internally); downstream
+            # tables expect the finite widths that were passed in.
+            _n_report = _w.copy()
+            lt = {
+                "n": _n_report,
+                "ax": _p["ax"],
+                "mx": _p["mx"].astype(float),
+                "qx": _p["qx"],
+                "px": 1.0 - _p["qx"],
+                "lx": _lx,
+                "ndx": _dx,
+                "nLx": _Lx,
+                "Tx": _Tx,
+                "ex": _p["ex"],
+            }
+            _backend = "pydemography"
+    except Exception:
+        lt = None
+        _backend = None
+
+    if lt is None:
+        lt = _build_life_table(mx, width, radix=radix)
 
     ages = (df[age_col].astype(str).to_numpy()
             if age_col in df.columns else np.arange(mx.shape[0]).astype(str))
@@ -230,6 +279,7 @@ def life_table(state: StudyState, **kwargs: Any) -> StudyState:
         "ex": {str(a): float(e) for a, e in zip(ages, lt["ex"])},
         "radix": radix,
         "columns": {"age": age_col, "mx": mx_col, "width": width_col},
+        "backend": _backend if _backend is not None else "builtin",
         "note": "period life table; a0≈0.1, ax=n/2 elsewhere, open interval a=1/m",
     }
     state.write("models", "life_table", life_table_model)
@@ -306,10 +356,24 @@ def decomposition(state: StudyState, **kwargs: Any) -> StudyState:
     total_diff = crude_B - crude_A
 
     # -- Kitagawa additive split --------------------------------------------
+    # Per-age contributions are still needed for the diagnostics frame below;
+    # they are computed locally and their sums equal the scalar effects.
     rate_contrib = (mB - mA) * (cA + cB) / 2.0
     comp_contrib = (cB - cA) * (mA + mB) / 2.0
-    rate_effect = float(rate_contrib.sum())
-    composition_effect = float(comp_contrib.sum())
+
+    # Prefer the parity-gated pydemography port for the scalar split. Its
+    # kitagawa(c1, r1, c2, r2) uses the same closed forms; A→(cA, mA),
+    # B→(cB, mB), so total == crude_B − crude_A. Fall back on any failure.
+    _backend = "builtin"
+    try:
+        from ..external.pydemography import kitagawa as _pd_kitagawa
+        _k = _pd_kitagawa(cA, mA, cB, mB)
+        rate_effect = float(_k["rate_effect"])
+        composition_effect = float(_k["composition_effect"])
+        _backend = "pydemography"
+    except Exception:
+        rate_effect = float(rate_contrib.sum())
+        composition_effect = float(comp_contrib.sum())
 
     check_residual = float(total_diff - (rate_effect + composition_effect))
 
@@ -321,6 +385,7 @@ def decomposition(state: StudyState, **kwargs: Any) -> StudyState:
         "rate_effect": rate_effect,
         "composition_effect": composition_effect,
         "adding_up_residual": check_residual,
+        "backend": _backend,
         "note": "rate_effect + composition_effect = crude_B − crude_A (exact)",
     }
 
