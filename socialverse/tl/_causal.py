@@ -265,33 +265,73 @@ def _cs_inputs(df: pd.DataFrame, cols: dict, y_col: str) -> dict | None:
     }
 
 
-def _cs_estimate(df: pd.DataFrame, cols: dict, y_col: str) -> dict | None:
+def _cs_estimate(
+    df: pd.DataFrame, cols: dict, y_col: str, control_group: str = "nevertreated"
+) -> dict | None:
     """Run the parity-verified pydid backend and return CS point estimates.
 
-    Returns a dict with the overall (``simple``) ATT and the ``dynamic`` event-time
-    path (``egt`` -> ATT), or ``None`` if the port is unavailable / not applicable
+    Returns a dict with the overall (``simple``) ATT, the ``dynamic`` event-time
+    path (``egt`` -> ATT), and the ``group`` (per-cohort) and ``calendar`` (per-
+    period) aggregations, or ``None`` if the port is unavailable / not applicable
     (raises are swallowed by the caller's try/except regardless). Point estimates
     only — the port's bootstrap SEs are stochastic and NOT parity-gated, so SEs are
     left to the existing TWFE path.
+
+    ``control_group`` selects the comparison group for ``att_gt`` and mirrors
+    ``did::att_gt`` — ``'nevertreated'`` (default, back-compatible) uses only the
+    never-treated units; ``'notyettreated'`` also borrows the not-yet-treated units
+    as controls. For ``'notyettreated'`` a never-treated control is not required.
     """
     from ..external.pydid import att_gt, aggte  # parity-gated port
+
+    if control_group not in ("nevertreated", "notyettreated"):
+        control_group = "nevertreated"
 
     payload = _cs_inputs(df, cols, y_col)
     if payload is None:
         return None
-    # need at least one treated group and a never-treated control for CS
+    # need at least one treated group; a never-treated control is required only for
+    # the 'nevertreated' comparison (not-yet-treated can borrow later cohorts).
     gvals = np.asarray(payload["data"]["g"], float)
-    if not np.any(gvals > 0) or not np.any(gvals == 0):
+    if not np.any(gvals > 0):
+        return None
+    if control_group == "nevertreated" and not np.any(gvals == 0):
         return None
 
-    res = att_gt(**payload)  # control_group='nevertreated', est_method='reg', varying base
+    res = att_gt(control_group=control_group, **payload)  # est_method='reg', varying base
     simple = aggte(res, type="simple")
     dynamic = aggte(res, type="dynamic")
     egt = {int(e): float(a) for e, a in zip(dynamic.egt, dynamic.att_egt)}
+
+    # group aggregation: one ATT per treatment cohort g
+    by_group: dict[int, float] = {}
+    group_overall: float | None = None
+    try:
+        grp = aggte(res, type="group")
+        by_group = {int(g): float(a) for g, a in zip(grp.egt, grp.att_egt)}
+        group_overall = float(grp.overall_att)
+    except Exception:
+        by_group, group_overall = {}, None
+
+    # calendar aggregation: one ATT per calendar period t
+    by_calendar: dict[int, float] = {}
+    calendar_overall: float | None = None
+    try:
+        cal = aggte(res, type="calendar")
+        by_calendar = {int(t): float(a) for t, a in zip(cal.egt, cal.att_egt)}
+        calendar_overall = float(cal.overall_att)
+    except Exception:
+        by_calendar, calendar_overall = {}, None
+
     return {
         "overall_att": float(simple.overall_att),
         "event": egt,
         "dynamic_overall": float(dynamic.overall_att),
+        "group": by_group,
+        "group_overall": group_overall,
+        "calendar": by_calendar,
+        "calendar_overall": calendar_overall,
+        "control_group": control_group,
     }
 
 
@@ -592,12 +632,28 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
     # SE is stochastic and NOT gated, so we keep the TWFE cluster-robust ``se`` and
     # re-centre the CI on the CS estimate. Guarded so any failure leaves the
     # pre-existing TWFE estimate fully intact.
+    # ``control_group`` selects the CS comparison group: 'nevertreated' (default,
+    # back-compatible) or 'notyettreated' (also borrows not-yet-treated cohorts).
+    control_group = str(kwargs.get("control_group", "nevertreated"))
+    if control_group not in ("nevertreated", "notyettreated"):
+        control_group = "nevertreated"
+
     backend = "twfe"
+    att_by_group: dict[int, float] = {}
+    att_by_calendar: dict[int, float] = {}
+    att_group_overall: float | None = None
+    att_calendar_overall: float | None = None
+    cs_control_group: str | None = None
     try:
-        cs = _cs_estimate(work, cols, y_col)
+        cs = _cs_estimate(work, cols, y_col, control_group=control_group)
         if cs is not None and np.isfinite(cs["overall_att"]):
             att = float(cs["overall_att"])
             backend = "pydid"
+            cs_control_group = cs.get("control_group")
+            att_by_group = cs.get("group", {}) or {}
+            att_by_calendar = cs.get("calendar", {}) or {}
+            att_group_overall = cs.get("group_overall")
+            att_calendar_overall = cs.get("calendar_overall")
             if se is not None and np.isfinite(se) and se > 0:
                 from scipy import stats as _st
                 _tcrit = float(_st.t.ppf(0.975, max(n_clusters - 1, 1)))
@@ -617,6 +673,11 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
         "estimator": estimator,
         "parallel_trends": pt,
         "backend": backend,
+        "control_group": cs_control_group,
+        "att_by_group": att_by_group,
+        "att_group_overall": att_group_overall,
+        "att_by_calendar": att_by_calendar,
+        "att_calendar_overall": att_calendar_overall,
         "note": causal_note,
     }
     state.write("models", "twfe", model)

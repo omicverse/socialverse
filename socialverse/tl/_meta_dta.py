@@ -147,6 +147,14 @@ def dta_bivariate(state: StudyState, **kwargs: Any) -> StudyState:
             "converged": True, "_mu": mu.tolist(), "_Sigma": Sig.tolist(),
             "backend": "pymada",
         }
+        # 闭式 SROC 曲线下面积(Rutter-Gatsonis AUC + 观测 FPR 范围内偏 AUC)。
+        # 直接吃 port 返回的 fit 对象(含 freq_fpr),失败不影响既有 summary 键。
+        try:
+            from ..external.pymada import AUC as _pymada_auc
+            _a = _pymada_auc(fit)
+            summary["auc"] = {"AUC": float(_a["AUC"]), "pAUC": float(_a["pAUC"])}
+        except Exception:
+            pass
         state.write("models", "dta_bivariate", summary)
         return state
     except Exception:

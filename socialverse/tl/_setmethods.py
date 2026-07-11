@@ -44,7 +44,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["qca"]
+__all__ = ["qca", "calibrate", "necessity_analysis"]
 
 
 # --------------------------------------------------------------------- helpers
@@ -410,6 +410,41 @@ def qca(state: StudyState, **kwargs: Any) -> StudyState:
         sol_cov = round(_coverage(sol_mem, y), 4)
         solution_expr = " + ".join(p["term"] for p in paths)
 
+    # ---- necessity analysis (superSubset) --------------------------------
+    # 充分性(sufficiency)之外补充必要性(necessity)超集搜索:pyqca.superSubset
+    # 枚举通过 inclN/covN 阈值的必要条件(合取 + 极小析取),与 R QCA superSubset
+    # 的 relation="necessity" 对齐。作为 models['qca']['necessity'] 的新键补入,
+    # 不改动既有充分性解的任何键。任何缺输入/异常均降级为 note,不使 qca 崩溃。
+    necessity: dict[str, Any] = {"terms": [], "note": None}
+    try:
+        from ..external.pyqca import superSubset as _pyqca_superSubset
+
+        nec_incl_cut = float(kwargs.get("necessity_incl_cut",
+                                        kwargs.get("nec_incl_cut", 0.9)))
+        nec_cov_cut = float(kwargs.get("necessity_cov_cut",
+                                       kwargs.get("nec_cov_cut", 0.6)))
+        nec_data = {nm: fuzz[nm] for nm in names}
+        nec_data[outcome] = y
+        _ss = _pyqca_superSubset(
+            nec_data, outcome=outcome, conditions=names,
+            incl_cut=nec_incl_cut, cov_cut=nec_cov_cut,
+        )
+        _ic = _ss.get("incl_cov", {})
+        necessity = {
+            "terms": list(_ss.get("terms", [])),
+            "inclN": [round(float(v), 4) for v in _ic.get("inclN", [])],
+            "RoN": [round(float(v), 4) for v in _ic.get("RoN", [])],
+            "covN": [round(float(v), 4) for v in _ic.get("covN", [])],
+            "incl_cut": nec_incl_cut,
+            "cov_cut": nec_cov_cut,
+            "relation": "necessity",
+            "estimator": "pyqca.superSubset",
+            "note": ("必要条件超集(⇒ 表示必要):inclN=Σmin(X,Y)/ΣY, "
+                     "covN=Σmin(X,Y)/ΣX"),
+        }
+    except Exception as _exc:
+        necessity = {"terms": [], "note": "必要性分析跳过:{}".format(_exc)}
+
     state.write("models", "qca", {
         "solution": solution_expr,
         "paths": paths,
@@ -423,6 +458,7 @@ def qca(state: StudyState, **kwargs: Any) -> StudyState:
         "solution_type": "conservative/complex (无 remainder 简化假设)",
         "estimator": "fsQCA_truthtable + Quine-McCluskey",
         "backend": backend if backend else "in-module",
+        "necessity": necessity,
         "note": "充分性解:Y ⇐ {} (⇐ 表示充分)".format(solution_expr),
     })
     state.write("diagnostics", "consistency_coverage", {
@@ -433,5 +469,219 @@ def qca(state: StudyState, **kwargs: Any) -> StudyState:
         "solution_coverage": sol_cov,
         "backend": backend if backend else "in-module",
         "note": "组态一致性(充分性)+ 解一致性/覆盖率;consistency=Σmin(X,Y)/ΣX",
+    })
+    return state
+
+
+# --------------------------------------------------------------------- calibrate
+@register(
+    name="calibrate",
+    aliases=["校准", "模糊集校准", "direct_calibration"],
+    category="setmethods",
+    tier="plus",
+    skill="(QCA 缺口,Python 空白)",
+    languages=["Python"],
+    key_tools=["numpy"],
+    description="直接校准:把原始数值列按 3 锚点(排除/交叉/纳入)logistic 校准为模糊集隶属度;可回写校准列",
+    requires={"sources": ["datasets"]},
+    produces={"models": ["calibrate"]},
+    auto_fix="escalate",
+)
+def calibrate(state: StudyState, **kwargs: Any) -> StudyState:
+    """直接校准(Ragin 直接法)——原始数值列 → 模糊集隶属度 ``[0,1]``。
+
+    委派 :func:`socialverse.external.pyqca.calibrate`(与 R QCA ``calibrate``
+    对齐 1e-6):
+
+    * ``type="fuzzy", method="direct"`` —— 3 锚点 logistic 校准,``thresholds``
+      为 ``(排除 thEX, 交叉 thCR, 纳入 thIN)``,交叉点隶属度 0.5,纳入锚点
+      达到 ``idm``(默认 0.95)。``thEX > thIN`` 时为递减集,自动镜像。
+    * ``type="crisp"`` —— ``thresholds`` 为 k 个切点,返回各值 ``>=`` 切点的
+      个数(整数集值 ``0..k``)。
+
+    kwargs: ``column`` / ``x``(要校准的列名,必填),``thresholds``(锚点/切点,
+    必填),``type``(``"fuzzy"`` 默认 / ``"crisp"``),``idm``(纳入隶属度,默认
+    0.95),``new_column``(回写列名,默认 ``<column>_cal``),``add_to_frame``
+    (是否把校准列写回 ``sources['datasets']``,默认 True),``data``(可选覆盖
+    DataFrame)。
+
+    结果写入 ``models['calibrate']``,并(在可行时)把校准后的列添加回工作表。
+    """
+    column = kwargs.get("column") or kwargs.get("x")
+    thresholds = kwargs.get("thresholds")
+    cal_type = kwargs.get("type", "fuzzy")
+    idm = float(kwargs.get("idm", 0.95))
+    add_to_frame = bool(kwargs.get("add_to_frame", True))
+
+    def _empty(note: str) -> StudyState:
+        state.write("models", "calibrate", {
+            "column": column, "thresholds": thresholds, "type": cal_type,
+            "calibrated": None, "new_column": None, "added_to_frame": False,
+            "note": note,
+        })
+        return state
+
+    df = _get_datasets(state, kwargs)
+    if df is None:
+        return _empty("缺少数据(sources['datasets'] 或 data=),无法校准")
+    if not column or column not in df.columns:
+        return _empty("缺少或找不到要校准的列(column=),无法校准")
+    if thresholds is None:
+        return _empty("缺少 thresholds(校准锚点/切点),无法校准")
+
+    new_column = kwargs.get("new_column") or "{}_cal".format(column)
+    try:
+        from ..external.pyqca import calibrate as _pyqca_calibrate
+
+        raw = pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+        cal = _pyqca_calibrate(raw, type=cal_type,
+                               thresholds=list(thresholds), idm=idm)
+        cal_list = [None if (isinstance(v, float) and np.isnan(v))
+                    else (int(v) if cal_type == "crisp" else round(float(v), 6))
+                    for v in np.asarray(cal).tolist()]
+    except Exception as _exc:
+        return _empty("校准失败:{}".format(_exc))
+
+    added = False
+    if add_to_frame:
+        try:
+            src = state.sources.get("datasets")
+            if isinstance(src, pd.DataFrame):
+                src[new_column] = np.asarray(cal)
+                added = True
+            elif isinstance(src, dict):
+                for _v in src.values():
+                    if isinstance(_v, pd.DataFrame) and column in _v.columns:
+                        _v[new_column] = np.asarray(cal)
+                        added = True
+                        break
+        except Exception:
+            added = False
+
+    state.write("models", "calibrate", {
+        "column": column,
+        "new_column": new_column,
+        "thresholds": list(thresholds),
+        "type": cal_type,
+        "idm": idm if cal_type == "fuzzy" else None,
+        "method": "direct" if cal_type == "fuzzy" else "crisp",
+        "calibrated": cal_list,
+        "n": len(cal_list),
+        "added_to_frame": added,
+        "estimator": "pyqca.calibrate",
+        "note": ("直接校准({}):3 锚点 logistic → 模糊集隶属度".format(cal_type)
+                 if cal_type == "fuzzy"
+                 else "crisp 校准:findInterval(x, sort(thresholds))"),
+    })
+    return state
+
+
+# ------------------------------------------------------------ necessity_analysis
+@register(
+    name="necessity_analysis",
+    aliases=["必要性分析", "superSubset", "必要条件"],
+    category="setmethods",
+    tier="plus",
+    skill="(QCA 缺口,Python 空白)",
+    languages=["Python"],
+    key_tools=["numpy"],
+    description="必要性超集搜索(superSubset):枚举通过 inclN/covN 阈值的必要条件(合取 + 极小析取)",
+    requires={"sources": ["datasets"], "variables": ["outcome"]},
+    produces={"models": ["necessity"], "diagnostics": ["necessity"]},
+    auto_fix="escalate",
+)
+def necessity_analysis(state: StudyState, **kwargs: Any) -> StudyState:
+    """必要性超集搜索(R QCA ``superSubset``,``relation="necessity"``)。
+
+    委派 :func:`socialverse.external.pyqca.superSubset`。枚举两族表达式并保留
+    通过必要性阈值者:
+
+    * **合取**(fuzzy ``min``,含单条件)—— 每个通过 ``inclN >= incl_cut`` 且
+      ``covN >= cov_cut`` 的合取都报告(``*`` 连接)。
+    * **析取**(fuzzy ``max``,>=2 条件)—— 仅当极小(无更小子表达式已通过)
+      时报告(`` + `` 连接)。
+
+    kwargs: ``conditions``(条件列名,缺省自动挑数值列),``outcome``(结果列名,
+    缺省读 ``variables['outcome']``),``incl_cut``(必要性一致性 cut,默认 0.9),
+    ``cov_cut``(必要性覆盖 cut,默认 0.6),``ron_cut``(RoN cut,默认 0.0),
+    ``depth``(每表达式最大条件数),``data``(可选覆盖 DataFrame)。
+
+    结果写入 ``models['necessity']``(必要条件表)与 ``diagnostics['necessity']``。
+    校准沿用 ``qca`` 的模糊化规则([0,1] 原样,否则 min-max)。
+    """
+    df = _get_datasets(state, kwargs)
+    outcome = kwargs.get("outcome") or state.variables.get("outcome")
+    conditions = kwargs.get("conditions")
+    incl_cut = float(kwargs.get("incl_cut", 0.9))
+    cov_cut = float(kwargs.get("cov_cut", 0.6))
+    ron_cut = float(kwargs.get("ron_cut", 0.0))
+    depth = kwargs.get("depth")
+
+    def _empty(note: str) -> StudyState:
+        state.write("models", "necessity", {
+            "terms": [], "outcome": outcome, "conditions": conditions,
+            "relation": "necessity", "note": note,
+        })
+        state.write("diagnostics", "necessity", {"terms": [], "note": note})
+        return state
+
+    if df is None or outcome is None or outcome not in df.columns:
+        return _empty("缺少数据或结果变量(outcome),无法进行必要性分析")
+
+    if not conditions:
+        conditions = [c for c in df.columns
+                      if c != outcome and pd.api.types.is_numeric_dtype(df[c])
+                      and df[c].nunique() > 2][:6]
+    conditions = [c for c in conditions if c in df.columns]
+    if not conditions:
+        return _empty("找不到可用的条件变量(conditions)")
+
+    def _calibrate_col(s: pd.Series) -> np.ndarray:
+        v = pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
+        if np.nanmin(v) >= 0.0 and np.nanmax(v) <= 1.0:
+            return np.clip(v, 0.0, 1.0)
+        lo, hi = np.nanmin(v), np.nanmax(v)
+        return np.clip((v - lo) / (hi - lo), 0.0, 1.0) if hi > lo else np.full_like(v, 0.5)
+
+    try:
+        from ..external.pyqca import superSubset as _pyqca_superSubset
+
+        nec_data = {c: _calibrate_col(df[c]) for c in conditions}
+        nec_data[outcome] = _calibrate_col(df[outcome])
+        _ss = _pyqca_superSubset(
+            nec_data, outcome=outcome, conditions=list(conditions),
+            incl_cut=incl_cut, cov_cut=cov_cut, ron_cut=ron_cut,
+            depth=(int(depth) if depth is not None else None),
+        )
+    except Exception as _exc:
+        return _empty("必要性分析失败:{}".format(_exc))
+
+    _ic = _ss.get("incl_cov", {})
+    terms = list(_ss.get("terms", []))
+    inclN = [round(float(v), 4) for v in _ic.get("inclN", [])]
+    RoN = [round(float(v), 4) for v in _ic.get("RoN", [])]
+    covN = [round(float(v), 4) for v in _ic.get("covN", [])]
+
+    state.write("models", "necessity", {
+        "terms": terms,
+        "inclN": inclN,
+        "RoN": RoN,
+        "covN": covN,
+        "outcome": outcome,
+        "conditions": list(conditions),
+        "incl_cut": incl_cut,
+        "cov_cut": cov_cut,
+        "ron_cut": ron_cut,
+        "relation": "necessity",
+        "estimator": "pyqca.superSubset",
+        "note": "必要条件超集(⇒ 表示必要):inclN=Σmin(X,Y)/ΣY, covN=Σmin(X,Y)/ΣX",
+    })
+    state.write("diagnostics", "necessity", {
+        "terms": terms,
+        "inclN": inclN,
+        "RoN": RoN,
+        "covN": covN,
+        "n_terms": len(terms),
+        "note": "必要性 inclN/covN/RoN(Schneider & Wagemann 相关性)",
     })
     return state

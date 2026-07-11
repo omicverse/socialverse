@@ -130,6 +130,21 @@ def netmeta(state: StudyState, **kwargs: Any) -> StudyState:
         Q = float(_fit.Q); dof = int(_fit.df_Q)
         tau2 = float(_fit.tau2) if np.isfinite(_fit.tau2) else 0.0
         I2 = max(0.0, 100 * (Q - dof) / Q) if Q > 0 and dof > 0 else 0.0
+        # ---- per-comparison network measures (netmeta::netmeasures) ----------
+        # proportion of direct evidence, mean path length, minimal parallelism.
+        # additive over the existing contract: purely a new `netmeasures` key.
+        netmeasures = {}
+        try:
+            from ..external.pynetmeta import netmeasures as _pnmm
+            _nm = _pnmm(_fit, random=_random)
+            netmeasures = {
+                "proportion": {str(k): float(v) for k, v in _nm.get("proportion", {}).items()},
+                "meanpath": {str(k): float(v) for k, v in _nm.get("meanpath", {}).items()},
+                "minpar": {str(k): float(v) for k, v in _nm.get("minpar", {}).items()},
+                "minpar_study": {str(k): float(v) for k, v in _nm.get("minpar_study", {}).items()},
+            }
+        except Exception as _e:
+            netmeasures = {"note": f"netmeasures unavailable: {_e}"}
         state.write("models", "nma", {
             "treatments": treatments, "reference": ref,
             "sm": df["measure"].iloc[0] if "measure" in df else "",
@@ -140,6 +155,7 @@ def netmeta(state: StudyState, **kwargs: Any) -> StudyState:
             "n_studies": int(df["studlab"].nunique()) if "studlab" in df else len(df),
             "_beta": full_beta.tolist(), "_cov": full_cov.tolist(),
             "backend": "pynetmeta",
+            "netmeasures": netmeasures,
         })
         return state
     except Exception:
