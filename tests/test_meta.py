@@ -30,6 +30,14 @@ def _effects_state(yi=_YI, vi=_VI, **extra):
 
 
 # --------------------------------------------------------------- registration
+def test_datasets_accessible_as_sv_datasets():
+    """`sv.datasets.load_bcg()` must work off the top-level attribute (mirrors
+    ov.datasets) — not only `from socialverse import datasets`."""
+    assert hasattr(sv, "datasets")
+    bcg = sv.datasets.load_bcg()
+    assert len(bcg) == 13 and {"tpos", "tneg", "cpos", "cneg", "ablat"}.issubset(bcg.columns)
+
+
 def test_all_meta_functions_registered():
     for name in ["es_proportion", "es_from_means", "hedges_correct", "es_from_2x2",
                  "es_from_r", "es_from_ci", "escalc", "vcalc", "meta_fixed",
