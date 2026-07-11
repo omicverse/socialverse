@@ -54,6 +54,24 @@ def test_pointbiserial_equal_groups():
     assert float(s.models["meta_effects"]["yi"].iloc[0]) == pytest.approx(2 * 0.3 / np.sqrt(1 - 0.09), rel=1e-9)
 
 
+def test_sv_style_applies_rcparams_and_registers():
+    import matplotlib as mpl
+    assert sv.registry.get("style") is not None            # discoverable via registry_lookup
+    assert callable(sv.style) and callable(sv.plot_set)
+    sv.style(dpi=111, fontsize=15, cjk=True, verbose=False)
+    assert mpl.rcParams["font.size"] == 15
+    assert mpl.rcParams["axes.spines.top"] is False
+    assert mpl.rcParams["svg.fonttype"] == "none"          # vector-friendly editable text
+    assert mpl.rcParams["axes.unicode_minus"] is False
+    # a plot still renders after styling
+    s = _eff(np.array([0.2, 0.5, 0.8]), np.array([0.04, 0.05, 0.03]))
+    sv.tl.meta_random(s)
+    import tempfile, os
+    p = os.path.join(tempfile.mkdtemp(), "styled.png")
+    sv.pl.funnel(s, out=p)
+    assert os.path.getsize(p) > 1000
+
+
 def test_es_pomp_rescales_to_0_100():
     df = pd.DataFrame({"study": ["A", "B"], "mean": [4.0, 3.0], "sd": [1.2, 1.0], "n": [100, 80]})
     s = _src(df)

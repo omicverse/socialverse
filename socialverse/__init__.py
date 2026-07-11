@@ -35,8 +35,9 @@ from ._registry import (  # noqa: F401
 )
 from ._slots import SLOTS, VALID_SLOTS  # noqa: F401
 from ._state import StudyState  # noqa: F401
+from ._style import plot_set, resolve_publication_font, style  # noqa: F401
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 # Import submodules for their side effect: each module's @register calls populate
 # the singleton registry. Wrapped in a guard so a missing optional dep in one
@@ -85,4 +86,5 @@ __all__ = [
     "registry", "register", "StudyState", "SLOTS", "VALID_SLOTS",
     "FunctionRegistry", "RegistryError", "find_function", "get_prerequisites",
     "list_functions", "export_registry", "utils", "__version__",
+    "style", "plot_set", "resolve_publication_font",
 ]
