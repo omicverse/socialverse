@@ -269,6 +269,26 @@ sv.pl.regtable(study, models=[("TWFE", study.models["did"]),
 - **Governance**: ethics checks, data-use compliance, AI-use disclosure - `sv.gov.ethics_check` · `sv.gov.data_use_check` · `sv.gov.ai_use_disclosure`
 - **Literature**: free literature search, citation verification to prevent hallucinated references, reference management - `sv.lit.search_free` · `sv.lit.verify_citations` · `sv.lit.citation_manage`
 
+### Example datasets
+
+`sv.datasets.*` ships small, deterministic **synthetic** datasets with a documented ground truth (like sklearn's `make_*`), so every method has data to run on and a truth to recover. Beyond the method-specific toys (DiD, RDD, survival, IRT, QCA, spatial, networks, meta-analysis, …) there's a **broad social-science / humanities set**, each wired to its analysis function:
+
+| loader | 类别 category | 目标函数 | 真值 recovered |
+| --- | --- | --- | --- |
+| `load_wages` | 劳动经济学 / 分层 labor & stratification | `oaxaca` · `glm` | gender wage gap ≈ −0.15 (unexplained) |
+| `load_vote` | 政治学 / 选举 political science | `mlogit` | ideology slope ±1.1 by party |
+| `load_values` | 比较社会学 / 跨国 comparative | `multilevel` · `cfa` | edu +0.40, country ICC ≈ 0.12 |
+| `load_protest` | 抗争政治 / 计数 contentious politics | `glm` (poisson) | democracy +0.60, pop offset ≈ 1.0 |
+| `load_coding` | 传播学 / 内容分析 communication | `interrater` | Fleiss κ ≈ 0.60 |
+| `load_wellbeing` | 心理学 / 面板 psychology panel | `multilevel` | income +1.5, unemployment −1.2 |
+| `load_complex_survey` | 调查方法 survey methods | `survey_estimate` | design-weighted 0.22 vs naive 0.33 |
+| `load_speeches` | 数字人文 / 语料 digital humanities | `build_corpus` | labels learnable from vocabulary |
+
+```python
+import socialverse as sv
+df = sv.datasets.load_bcg()                 # + the metafor BCG classic (13 trials)
+```
+
 ---
 
 ## Coming from R / Stata / SPSS?
