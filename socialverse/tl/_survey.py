@@ -253,6 +253,8 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
     weight_col = state.design.get("weights")
     outcome = state.variables.get("outcome")
     psu_col = state.design.get("psu")
+    stratum_col = state.design.get("strata") or state.design.get("stratum")
+    fpc_col = state.design.get("fpc")
     exposure = kwargs.get("exposure", state.variables.get("exposure"))
     controls = kwargs.get("controls", state.variables.get("controls")) or []
     if isinstance(exposure, str):
@@ -265,7 +267,8 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
     predictors = [c for c in (exposure + controls) if c in data.columns]
 
     # Assemble a clean modelling frame (complete cases over used columns).
-    used = [c for c in ([outcome] + predictors + [weight_col, psu_col]) if c in data.columns]
+    used = [c for c in ([outcome] + predictors + [weight_col, psu_col, stratum_col, fpc_col])
+            if c and c in data.columns]
     model_df = data[used].apply(pd.to_numeric, errors="coerce") if used else data.copy()
     if outcome in model_df.columns:
         subset = [c for c in ([outcome] + predictors) if c in model_df.columns]
@@ -289,28 +292,45 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
     unweighted_coef: dict[str, float] = {}
     fitted = False
 
-    if sm is not None and n > len(predictors) + 1 and n > 1:
-        Xc = sm.add_constant(X, has_constant="add")
+    backend = None
+    if n > len(predictors) + 1 and n > 1:
+        # Design-based estimation via the parity-gated survey reconstruction
+        # (external/pysurvey) — exact R-survey Taylor-linearization incl. strata
+        # + FPC, superseding the statsmodels cluster-robust approximation which
+        # ignored both. See external/pysurvey.
         try:
-            wls = sm.WLS(y, Xc, weights=w)
-            if psu_col in model_df.columns and model_df[psu_col].notna().any():
-                res = wls.fit(cov_type="cluster",
-                              cov_kwds={"groups": model_df[psu_col].values})
+            from ..external.pysurvey import svydesign, svyglm, svymean
+            # Grouping ids (strata/PSU) are read from the ORIGINAL frame by row
+            # index — model_df was numeric-coerced, which would turn string
+            # stratum labels ("E"/"H"/"M") into NaN and collapse the variance.
+            idx = model_df.index
+            strata = data.loc[idx, stratum_col].to_numpy() if (stratum_col and stratum_col in data.columns) else None
+            psu = data.loc[idx, psu_col].to_numpy() if (psu_col and psu_col in data.columns and data.loc[idx, psu_col].notna().any()) else None
+            fpc = pd.to_numeric(data.loc[idx, fpc_col], errors="coerce").to_numpy(float) if (fpc_col and fpc_col in data.columns) else None
+            des = svydesign({outcome: y.to_numpy(float)}, weights=w.to_numpy(float),
+                            ids=psu, strata=strata, fpc=fpc)
+            names = ["const"] + predictors
+            if predictors:
+                g = svyglm(y.to_numpy(float), X.to_numpy(float), des)
+                coef = {names[i]: float(g["coef"][i]) for i in range(len(names))}
+                se = {names[i]: float(g["se"][i]) for i in range(len(names))}
+                ci = {names[i]: [float(g["ci_lb"][i]), float(g["ci_ub"][i])] for i in range(len(names))}
             else:
-                res = wls.fit(cov_type="HC1")
-            conf = res.conf_int()
-            coef = {k: float(v) for k, v in res.params.items()}
-            se = {k: float(v) for k, v in res.bse.items()}
-            ci = {k: [float(conf.loc[k, 0]), float(conf.loc[k, 1])] for k in res.params.index}
+                mr = svymean(y.to_numpy(float), des)
+                coef = {"const": mr["estimate"]}; se = {"const": mr["se"]}
+                ci = {"const": [mr["ci_lb"], mr["ci_ub"]]}
             fitted = True
-            # unweighted sensitivity contrast
+            backend = "pysurvey"
+        except Exception:
+            fitted = False
+        # unweighted OLS sensitivity contrast (statsmodels, optional)
+        if fitted and sm is not None:
             try:
+                Xc = sm.add_constant(X, has_constant="add")
                 ols = sm.OLS(y, Xc).fit()
                 unweighted_coef = {k: float(v) for k, v in ols.params.items()}
             except Exception:
                 unweighted_coef = {}
-        except Exception:
-            fitted = False
 
     if not fitted:
         # Design-based fallback with no statsmodels / degenerate frame: at least a
@@ -333,7 +353,8 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
         "outcome": outcome,
         "exposure": exposure,
         "controls": controls,
-        "cov_type": "cluster" if (psu_col in model_df.columns) else ("HC1" if fitted else "none"),
+        "cov_type": "survey.taylor" if backend == "pysurvey" else ("none" if not fitted else "HC1"),
+        "backend": backend,
         "psu": psu_col,
         "weights": weight_col,
     }

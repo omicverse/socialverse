@@ -378,16 +378,27 @@ def survival(state: StudyState, **kwargs: Any) -> StudyState:
         if time_varying else "statsmodels.PHReg (Cox, Breslow ties)"
     )
     try:
-        # ``entry`` left-truncates each interval so it enters the risk set at its
-        # start — the Andersen-Gill formulation for time-varying covariates.
-        ph = sm.PHReg(dur, X, status=status, entry=entry, ties="breslow")
-        res = ph.fit()
-        params = np.asarray(res.params, dtype=float)
-        bse = np.asarray(res.bse, dtype=float)
-        pvals = np.asarray(res.pvalues, dtype=float)
-        for name, b, s, p in zip(covariates, params, bse, pvals):
-            log_hr[name] = (float(b), float(s), float(p))
-    except Exception as exc:  # pragma: no cover - PHReg is available in-env
+        if time_varying:
+            # ``entry`` left-truncates each interval so it enters the risk set at
+            # its start — the Andersen-Gill formulation for time-varying
+            # covariates (not covered by the pysurvival right-censored port).
+            ph = sm.PHReg(dur, X, status=status, entry=entry, ties="breslow")
+            res = ph.fit()
+            params = np.asarray(res.params, dtype=float)
+            bse = np.asarray(res.bse, dtype=float)
+            pvals = np.asarray(res.pvalues, dtype=float)
+            for name, b, s, p in zip(covariates, params, bse, pvals):
+                log_hr[name] = (float(b), float(s), float(p))
+        else:
+            # Parity-gated Cox reconstruction (external/pysurvival) — R coxph's
+            # default Efron tie-handling, Newton-Raphson partial likelihood,
+            # matched to survival 3.8.3 at 1e-6. Supersedes the Breslow PHReg fit.
+            from ..external.pysurvival import coxph as _coxph
+            rc = _coxph(dur, status, X, ties="efron")
+            cox_note = "pysurvival Cox PH (Efron ties, survival::coxph parity)"
+            for i, name in enumerate(covariates):
+                log_hr[name] = (float(rc.coef[i]), float(rc.se[i]), float(rc.pval[i]))
+    except Exception as exc:  # pragma: no cover
         if time_varying:
             # the numpy fallback ignores left truncation → wrong for AG; refuse.
             return _empty(f"Andersen-Gill 时变 Cox 需 statsmodels.PHReg(未可用:{exc!s})")

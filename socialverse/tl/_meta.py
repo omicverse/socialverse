@@ -311,6 +311,27 @@ def meta_random(state: StudyState, **kwargs: Any) -> StudyState:
     from scipy import stats
     y, v = eff["yi"].to_numpy(float), eff["vi"].to_numpy(float)
     method = str(kwargs.get("method", "REML")).upper()
+    hk = bool(kwargs.get("knapp_hartung", kwargs.get("hksj", False)))
+
+    # Parity-gated backend: metafor::rma reconstruction (external/pymetafor).
+    # Covers the metafor τ² estimators REML/ML/DL/EE with 1e-6 parity; also
+    # yields I²/H²/Q_E/SE(τ²)/prediction-interval. PM/SJ/HS/HE fall through to
+    # the legacy estimator roster below.
+    if method in ("REML", "ML", "DL", "EE", "FE", "CE"):
+        from ..external.pymetafor import rma as _rma_port
+        r = _rma_port(y, v, method=method, test=("knha" if hk else "z"))
+        pi = r.predict()
+        state.write("models", "meta", {
+            "model": "random", "method": method, "estimate": float(r.beta[0]),
+            "se": float(r.se[0]), "ci_lb": float(r.ci_lb[0]), "ci_ub": float(r.ci_ub[0]),
+            "zval": float(r.zval[0]), "pval": float(r.pval[0]),
+            "tau2": r.tau2, "tau": float(np.sqrt(r.tau2)), "se_tau2": r.se_tau2,
+            "I2": r.I2, "H2": r.H2, "QE": r.QE, "QEp": r.QEp,
+            "pi_lb": pi["pi_lb"], "pi_ub": pi["pi_ub"],
+            "k": r.k, "knapp_hartung": hk, "backend": "pymetafor",
+        })
+        return state
+
     tau2 = _estimate_tau2(y, v, method)
     k = len(y)
     w0 = 1.0 / (v + tau2)

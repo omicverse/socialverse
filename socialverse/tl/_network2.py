@@ -156,6 +156,89 @@ def _logit_fit(y: np.ndarray, X: np.ndarray, colnames: list[str]) -> dict[str, A
     }
 
 
+# Terms the parity-gated pyergm port can fit exactly (dyad-independent MPLE).
+_PYERGM_TERMS = {"edges", "nodecov", "nodematch"}
+
+
+def _node_attr_vector(kwargs: dict[str, Any], nodes: list, term: str):
+    """Resolve a length-n vertex-attribute vector for a ``nodecov``/``nodematch`` term.
+
+    Looks for ``kwargs['<term>']`` (or ``kwargs['<term>_attr']``) as either a
+    ``{node: value}`` mapping or a sequence aligned to ``nodes``. dtypes are
+    preserved: ``nodematch`` labels stay categorical (never numeric-coerced),
+    only ``nodecov`` is cast to float (it is a numeric main effect).
+    """
+    attr = kwargs.get(term, kwargs.get(f"{term}_attr"))
+    if attr is None:
+        return None
+    if isinstance(attr, dict):
+        try:
+            vals = [attr[node] for node in nodes]
+        except KeyError:
+            return None
+    elif isinstance(attr, (list, tuple, np.ndarray, pd.Series)):
+        seq = list(attr)
+        if len(seq) != len(nodes):
+            return None
+        vals = seq
+    else:
+        return None
+    if term == "nodecov":
+        try:
+            return np.asarray(vals, dtype=float)
+        except (TypeError, ValueError):
+            return None
+    # nodematch: keep the raw (possibly string / categorical) labels as-is
+    return np.asarray(vals, dtype=object)
+
+
+def _ergm_mple_via_port(A: np.ndarray, terms: list[str], kwargs: dict[str, Any],
+                        nodes: list, directed: bool = True) -> dict[str, Any] | None:
+    """Delegate the MPLE fit to the parity-gated ``pyergm`` port.
+
+    Returns a ``fit`` dict in the exact shape :func:`_logit_fit` produces
+    (``backend``/``coef``/``se``/``z``/``llf``/``n_obs``) with ``backend`` set to
+    ``"pyergm"``, or ``None`` if the requested terms fall outside the port's
+    dyad-independent scope, an attribute cannot be resolved, or the port raises
+    (so the caller can fall back to the pre-existing engine).
+    """
+    if not set(terms).issubset(_PYERGM_TERMS):
+        return None
+    try:
+        from ..external.pyergm import ergm_mple
+
+        port_terms: list[Any] = []
+        for t in terms:
+            if t == "edges":
+                port_terms.append("edges")
+            else:  # nodecov / nodematch — need an attribute vector
+                vec = _node_attr_vector(kwargs, nodes, t)
+                if vec is None:
+                    return None
+                port_terms.append((t, vec))
+
+        res = ergm_mple(A, port_terms, directed=directed)
+        # Map MPLEResult -> the exact _logit_fit dict shape, keyed by term name.
+        coef = {t: float(b) for t, b in zip(terms, res.coef)}
+        se = {t: float(s) for t, s in zip(terms, res.se)}
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = {t: (float(b) / float(s) if s else float("nan"))
+                 for t, b, s in zip(terms, res.coef, res.se)}
+        # dyad count = observations in the design (n(n-1) directed, n(n-1)/2 undirected)
+        n = A.shape[0]
+        n_obs = n * (n - 1) if directed else n * (n - 1) // 2
+        return {
+            "backend": "pyergm",
+            "coef": coef,
+            "se": se,
+            "z": z,
+            "llf": float(res.loglik),
+            "n_obs": int(n_obs),
+        }
+    except Exception:
+        return None
+
+
 def _ergm_change_stats(A: np.ndarray, terms: list[str]) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Build the dyadic design matrix of ERGM change statistics.
 
@@ -306,8 +389,14 @@ def ergm(state: StudyState, **kwargs: Any) -> StudyState:
     if n < 3 or A.sum() == 0:
         return _empty("网络过小或无边,无法拟合 ERGM")
 
-    y, X, colnames = _ergm_change_stats(A, terms)
-    fit = _logit_fit(y, X, colnames)
+    # Prefer the parity-gated pyergm port for dyad-independent terms (edges /
+    # nodecov / nodematch); it reproduces statnet::ergm MPLE to 1e-6. If the
+    # requested terms are dyad-dependent (mutual / transitive) or the port raises,
+    # fall back to the pre-existing change-statistics + logistic-regression engine.
+    fit = _ergm_mple_via_port(A, terms, kwargs, nodes, directed=True)
+    if fit is None:
+        y, X, colnames = _ergm_change_stats(A, terms)
+        fit = _logit_fit(y, X, colnames)
     obs = _observed_stats(A)
     gof = _ergm_gof(A, fit["coef"], terms, seed)
 

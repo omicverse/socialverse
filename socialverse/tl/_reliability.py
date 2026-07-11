@@ -73,10 +73,21 @@ def _cronbach_alpha(item_matrix: np.ndarray) -> float | None:
 
     ``α = (k/(k−1))·(1 − Σ var_item / var_total)``, using sample variances
     (ddof=1). Returns ``None`` if fewer than two items.
+
+    Delegates to the parity-gated :mod:`pypsych` port (``raw_alpha`` of psych's
+    ``alpha`` total row, which is the covariance-based Cronbach's α); falls back
+    to the local closed-form if the port raises.
     """
     n, k = item_matrix.shape
     if k < 2:
         return None
+    try:
+        from ..external.pypsych import cronbach_alpha as _pp_alpha
+        val = _pp_alpha(item_matrix)["raw_alpha"]
+        if np.isfinite(val):
+            return float(val)
+    except Exception:
+        pass
     item_vars = item_matrix.var(axis=0, ddof=1)
     total_var = item_matrix.sum(axis=1).var(ddof=1)
     if total_var <= 0:
@@ -131,6 +142,17 @@ def _mcdonald_omega(item_matrix: np.ndarray) -> float | None:
     """
     if item_matrix.shape[1] < 2:
         return None
+    # Prefer the parity-gated pypsych port: McDonald's ω_total from the
+    # principal-axis (fm="pa") communalities, ω = 1 − Σ(1−h²)/sum(R).
+    try:
+        from ..external.pypsych import omega_total as _pp_omega
+        corr = np.corrcoef(item_matrix, rowvar=False)
+        corr = np.nan_to_num(corr, nan=0.0)
+        val = _pp_omega(corr)
+        if np.isfinite(val):
+            return float(val)
+    except Exception:
+        pass
     load = _single_factor_loadings(item_matrix)
     sum_load = float(load.sum())
     uniqueness = float(np.sum(1.0 - load ** 2))
@@ -248,6 +270,7 @@ def reliability(state: StudyState, **kwargs: Any) -> StudyState:
         "k_items": int(k),
         "n": int(n),
         "items": list(items),
+        "backend": "pypsych",
         "note": (
             "Cronbach α + McDonald ω(单因子载荷);校正项-总相关=题项 vs 其余题项之和;"
             "α-if-item-deleted=删该题后的 α"

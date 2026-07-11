@@ -334,36 +334,87 @@ def qca(state: StudyState, **kwargs: Any) -> StudyState:
         })
         return state
 
-    # ---- 3/4. Quine–McCluskey minimization --------------------------------
-    primes = _prime_implicants(positive_minterms)
-    solution_imps = _select_cover(primes, positive_minterms)
+    # ---- 3/4/5. Boolean minimization + parameters of fit ------------------
+    # Prefer the parity-gated pyqca port (proven 1e-6 vs R QCA). It performs the
+    # Quine–McCluskey minimization on the OUT=1 corners and recomputes the
+    # per-term / solution parameters of fit on the same calibrated fuzzy data.
+    # The ``positive_minterms`` (already coded with this module's n_cut / PRI /
+    # consistency rule) are the minimization space, so the OUT-coding contract is
+    # preserved; only the numeric minimization + fit are delegated. On any error
+    # we fall back to the pre-existing in-module implementation.
+    paths: list[dict[str, Any]] | None = None
+    solution_expr: str | None = None
+    sol_cons: float | None = None
+    sol_cov: float | None = None
+    backend: str | None = None
+    try:
+        from ..external.pyqca import minimize as _pyqca_minimize, TruthTable as _PyqcaTT
 
-    # ---- 5. per-path + solution fit on the fuzzy data ---------------------
-    paths: list[dict[str, Any]] = []
-    path_memberships: list[np.ndarray] = []
-    for imp in solution_imps:
-        mem = _implicant_membership(imp, fuzz, names)
-        path_memberships.append(mem)
-        paths.append({
-            "term": _implicant_label(imp, names),
-            "raw_consistency": round(_consistency(mem, y), 4),
-            "raw_coverage": round(_coverage(mem, y), 4),
-        })
+        # Build a pyqca TruthTable whose OUT column is exactly this module's
+        # coding (positive_minterms → OUT=1). rows are the corner bit-patterns
+        # in condition order (names); membership/outcome come from the same
+        # calibrated ``fuzz``/``y`` so the fit numbers match R QCA element-wise.
+        _pos = list(positive_minterms)
+        _X = np.column_stack([fuzz[nm] for nm in names])
+        _tt = _PyqcaTT(
+            conditions=names,
+            rownames=list(range(1, len(_pos) + 1)),
+            rows=[list(c) for c in _pos],
+            OUT=[1] * len(_pos),
+            n=[int((corner_membership[c] > 0.5).sum()) for c in _pos],
+            incl=[_consistency(corner_membership[c], y) for c in _pos],
+            PRI=[_pri_consistency(corner_membership[c], y) for c in _pos],
+            X=_X,
+            y=y,
+            incl_cut=threshold,
+        )
+        _res = _pyqca_minimize(_tt, include=None)
+        _terms = _res["terms"]
+        paths = [
+            {
+                "term": t if t else "1",
+                "raw_consistency": round(float(_res["inclS"][i]), 4),
+                "raw_coverage": round(float(_res["covS"][i]), 4),
+            }
+            for i, t in enumerate(_terms)
+        ]
+        solution_expr = " + ".join(p["term"] for p in paths)
+        _ov = _res["overall"]
+        sol_cons = round(float(_ov["inclS"]), 4)
+        sol_cov = round(float(_ov["covS"]), 4)
+        backend = "pyqca"
+    except Exception:
+        paths = None  # fall through to the pre-existing implementation
 
-    # solution = fuzzy OR (max) of all path memberships
-    sol_mem = path_memberships[0]
-    for m in path_memberships[1:]:
-        sol_mem = np.maximum(sol_mem, m)
-    sol_cons = _consistency(sol_mem, y)
-    sol_cov = _coverage(sol_mem, y)
+    if paths is None:
+        # ---- pre-existing in-module Quine–McCluskey + fit -----------------
+        primes = _prime_implicants(positive_minterms)
+        solution_imps = _select_cover(primes, positive_minterms)
 
-    solution_expr = " + ".join(p["term"] for p in paths)
+        paths = []
+        path_memberships: list[np.ndarray] = []
+        for imp in solution_imps:
+            mem = _implicant_membership(imp, fuzz, names)
+            path_memberships.append(mem)
+            paths.append({
+                "term": _implicant_label(imp, names),
+                "raw_consistency": round(_consistency(mem, y), 4),
+                "raw_coverage": round(_coverage(mem, y), 4),
+            })
+
+        # solution = fuzzy OR (max) of all path memberships
+        sol_mem = path_memberships[0]
+        for m in path_memberships[1:]:
+            sol_mem = np.maximum(sol_mem, m)
+        sol_cons = round(_consistency(sol_mem, y), 4)
+        sol_cov = round(_coverage(sol_mem, y), 4)
+        solution_expr = " + ".join(p["term"] for p in paths)
 
     state.write("models", "qca", {
         "solution": solution_expr,
         "paths": paths,
-        "solution_consistency": round(sol_cons, 4),
-        "solution_coverage": round(sol_cov, 4),
+        "solution_consistency": sol_cons,
+        "solution_coverage": sol_cov,
         "conditions": names,
         "outcome": outcome,
         "threshold": threshold,
@@ -371,14 +422,16 @@ def qca(state: StudyState, **kwargs: Any) -> StudyState:
         "n_cut": n_cut,
         "solution_type": "conservative/complex (无 remainder 简化假设)",
         "estimator": "fsQCA_truthtable + Quine-McCluskey",
+        "backend": backend if backend else "in-module",
         "note": "充分性解:Y ⇐ {} (⇐ 表示充分)".format(solution_expr),
     })
     state.write("diagnostics", "consistency_coverage", {
         "truth_table": [{kk: vv for kk, vv in r.items() if kk != "corner"}
                         for r in truth_table],
         "n_positive_corners": len(positive_minterms),
-        "solution_consistency": round(sol_cons, 4),
-        "solution_coverage": round(sol_cov, 4),
+        "solution_consistency": sol_cons,
+        "solution_coverage": sol_cov,
+        "backend": backend if backend else "in-module",
         "note": "组态一致性(充分性)+ 解一致性/覆盖率;consistency=Σmin(X,Y)/ΣX",
     })
     return state

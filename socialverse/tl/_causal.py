@@ -228,6 +228,73 @@ def _within_coef(fit: dict, i: int, which: str = "V_cluster") -> dict:
     return {"coef": b, "se": se, "p": p, "ci": ci}
 
 
+# ------------------------------------------------------- pydid (Callaway-Sant'Anna)
+def _cs_inputs(df: pd.DataFrame, cols: dict, y_col: str) -> dict | None:
+    """Reshape the StudyState panel into the column-dict ``pydid.att_gt`` expects.
+
+    Callaway & Sant'Anna needs a first-treatment (``gname``) column with ``0`` for
+    the never-treated control group. We derive it from ``first_treated`` (mapping
+    NaN / non-positive sentinels to ``0``, matching the ``G=0`` convention used by
+    :func:`_rel_time`). ``idname`` / ``tname`` are kept as-is (NOT numeric-coerced
+    beyond what CS requires) so grouping labels are not corrupted. Returns ``None``
+    when the design lacks the columns the port needs (so the caller can fall back).
+    """
+    if cols.get("first_treated") is None or cols["first_treated"] not in df.columns:
+        return None
+    if cols.get("panel_id") is None or cols.get("time") is None:
+        return None
+
+    t = pd.to_numeric(df[cols["time"]], errors="coerce")
+    ft = pd.to_numeric(df[cols["first_treated"]], errors="coerce")
+    # never-treated / invalid onset -> 0 (CS never-treated code); post -> first-treat period
+    g = ft.where(np.isfinite(ft) & (ft > 0), other=0.0).astype(float)
+
+    ok = t.notna() & df[y_col].notna()
+    if not ok.any():
+        return None
+    # unit ids kept verbatim (do NOT numeric-coerce label columns)
+    ids = df[cols["panel_id"]].to_numpy()[ok.to_numpy()]
+    return {
+        "yname": "y", "tname": "t", "idname": "id", "gname": "g",
+        "data": {
+            "y": np.asarray(df[y_col], float)[ok.to_numpy()],
+            "t": t.to_numpy()[ok.to_numpy()],
+            "id": ids,
+            "g": g.to_numpy()[ok.to_numpy()],
+        },
+    }
+
+
+def _cs_estimate(df: pd.DataFrame, cols: dict, y_col: str) -> dict | None:
+    """Run the parity-verified pydid backend and return CS point estimates.
+
+    Returns a dict with the overall (``simple``) ATT and the ``dynamic`` event-time
+    path (``egt`` -> ATT), or ``None`` if the port is unavailable / not applicable
+    (raises are swallowed by the caller's try/except regardless). Point estimates
+    only — the port's bootstrap SEs are stochastic and NOT parity-gated, so SEs are
+    left to the existing TWFE path.
+    """
+    from ..external.pydid import att_gt, aggte  # parity-gated port
+
+    payload = _cs_inputs(df, cols, y_col)
+    if payload is None:
+        return None
+    # need at least one treated group and a never-treated control for CS
+    gvals = np.asarray(payload["data"]["g"], float)
+    if not np.any(gvals > 0) or not np.any(gvals == 0):
+        return None
+
+    res = att_gt(**payload)  # control_group='nevertreated', est_method='reg', varying base
+    simple = aggte(res, type="simple")
+    dynamic = aggte(res, type="dynamic")
+    egt = {int(e): float(a) for e, a in zip(dynamic.egt, dynamic.att_egt)}
+    return {
+        "overall_att": float(simple.overall_att),
+        "event": egt,
+        "dynamic_overall": float(dynamic.overall_att),
+    }
+
+
 # ------------------------------------------------------------------ parallel_trends
 @register(
     name="parallel_trends",
@@ -519,6 +586,26 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
                    else "因果 ATT(平行趋势通过)" if pt == "pass"
                    else "平行趋势未检验/未知 — 谨慎解读")
 
+    # Replace the ad-hoc TWFE point estimate with the parity-verified Callaway-
+    # Sant'Anna overall ATT (``did::att_gt`` + ``aggte(type='simple')`` via the
+    # pydid port). The port's point estimate is R-faithful to 1e-6; its bootstrap
+    # SE is stochastic and NOT gated, so we keep the TWFE cluster-robust ``se`` and
+    # re-centre the CI on the CS estimate. Guarded so any failure leaves the
+    # pre-existing TWFE estimate fully intact.
+    backend = "twfe"
+    try:
+        cs = _cs_estimate(work, cols, y_col)
+        if cs is not None and np.isfinite(cs["overall_att"]):
+            att = float(cs["overall_att"])
+            backend = "pydid"
+            if se is not None and np.isfinite(se) and se > 0:
+                from scipy import stats as _st
+                _tcrit = float(_st.t.ppf(0.975, max(n_clusters - 1, 1)))
+                ci_lo, ci_hi = att - _tcrit * se, att + _tcrit * se
+                p = float(2 * _st.t.sf(abs(att / se), max(n_clusters - 1, 1)))
+    except Exception:
+        backend = "twfe"  # pydid unavailable / not applicable — keep TWFE estimate
+
     model = {
         "att": att,
         "se": se,
@@ -529,6 +616,7 @@ def did(state: StudyState, **kwargs: Any) -> StudyState:
         "outcome": y_col,
         "estimator": estimator,
         "parallel_trends": pt,
+        "backend": backend,
         "note": causal_note,
     }
     state.write("models", "twfe", model)
@@ -624,6 +712,25 @@ def event_study(state: StudyState, **kwargs: Any) -> StudyState:
         n_used, n_clusters = int(valid.sum()), int(pd.unique(groups).size)
         estimator = "event_study_ols_cluster"
 
+    # Replace the ad-hoc TWFE event-time point estimates with the parity-verified
+    # Callaway-Sant'Anna dynamic ATT(e) (``did::att_gt`` + ``aggte(type='dynamic')``
+    # via the pydid port). Only the point estimate per relative period is swapped;
+    # the TWFE cluster-robust SE for that period is retained (CS bootstrap SEs are
+    # stochastic and NOT gated). Guarded so any failure leaves the TWFE path intact.
+    backend = "twfe"
+    try:
+        cs = _cs_estimate(work, cols, y_col)
+        if cs is not None and cs["event"]:
+            backend = "pydid"
+            for e, att_e in cs["event"].items():
+                if not np.isfinite(att_e) or int(e) == base:
+                    continue  # never overwrite the normalized base period
+                key = str(int(e))
+                se_prev = coefs.get(key, (0.0, 0.0))[1]  # keep TWFE SE for this period
+                coefs[key] = (float(att_e), float(se_prev))
+    except Exception:
+        backend = "twfe"  # pydid unavailable / not applicable — keep TWFE estimates
+
     ordered = {k: coefs[k] for k in sorted(coefs, key=lambda s: int(s))}
     state.write("models", "event_study", {
         "coefs": ordered,
@@ -632,6 +739,7 @@ def event_study(state: StudyState, **kwargs: Any) -> StudyState:
         "n": n_used,
         "n_clusters": n_clusters,
         "estimator": estimator,
+        "backend": backend,
         "note": "各相对期动态效应(base={} 归一化为 0)".format(base),
     })
     return state

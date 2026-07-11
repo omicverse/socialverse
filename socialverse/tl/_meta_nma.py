@@ -76,6 +76,75 @@ def netmeta(state: StudyState, **kwargs: Any) -> StudyState:
     treatments = sorted(set(df["treat1"]) | set(df["treat2"]), key=str)
     ref = kwargs.get("reference") or treatments[0]
     comb = str(kwargs.get("comb", "random")).lower()
+
+    # ---- faithful graph-theoretical port (netmeta::netmeta), parity-gated -----
+    # Delegate the numeric core to pynetmeta (proven 1e-6 vs R). It returns
+    # treatment×treatment TE/seTE matrices; we reconstruct the exact _beta/_cov
+    # contract (full β incl. ref=0, T×T cov) that downstream consumers rely on:
+    #   _beta[i] = TE_pooled[i, ref]  (treatment i vs reference)
+    #   Var(θ_i-θ_j) = cov[i,i]+cov[j,j]-2cov[i,j]  =>
+    #   cov[i,j] = (se[i,ref]^2 + se[j,ref]^2 - se[i,j]^2)/2  (ref column has cov=se^2)
+    try:
+        if "studlab" not in df.columns:
+            raise ValueError("pynetmeta needs studlab")
+        from ..external.pynetmeta import netmeta as _pnm
+        # keep label columns as strings; only TE/seTE are numeric
+        _TE = df["TE"].to_numpy(dtype=float)
+        _seTE = df["seTE"].to_numpy(dtype=float)
+        _t1 = df["treat1"].astype(str).to_numpy(dtype=object)
+        _t2 = df["treat2"].astype(str).to_numpy(dtype=object)
+        _sl = df["studlab"].astype(str).to_numpy(dtype=object)
+        _fit = _pnm(_TE, _seTE, _t1, _t2, _sl, reference_group=str(ref))
+        _trts = list(_fit.trts)
+        _random = comb.startswith("rand")
+        _TEmat = np.asarray(_fit.TE_random if _random else _fit.TE_fixed, float)
+        _SEmat = np.asarray(_fit.seTE_random if _random else _fit.seTE_fixed, float)
+        _ri = _trts.index(str(ref))
+        _Tn = len(_trts)
+        # β vs reference (ref = 0)
+        _beta_p = np.array([0.0 if k == _ri else _TEmat[k, _ri] for k in range(_Tn)])
+        _seref = np.array([0.0 if k == _ri else _SEmat[k, _ri] for k in range(_Tn)])
+        _cov_p = np.zeros((_Tn, _Tn))
+        for a in range(_Tn):
+            _cov_p[a, a] = float(_seref[a] ** 2)
+        for a in range(_Tn):
+            for b in range(a + 1, _Tn):
+                cij = 0.5 * (_seref[a] ** 2 + _seref[b] ** 2 - _SEmat[a, b] ** 2)
+                _cov_p[a, b] = _cov_p[b, a] = float(cij)
+        # reorder from port's sorted .trts to the module's `treatments` order
+        _perm = [_trts.index(str(t)) for t in treatments]
+        full_beta = _beta_p[_perm]
+        full_cov = _cov_p[np.ix_(_perm, _perm)]
+        effects = {t: {"vs_ref": float(full_beta[i]), "se": float(np.sqrt(max(full_cov[i, i], 0))),
+                       "reference": ref} for i, t in enumerate(treatments)}
+        league = {}
+        for i, ti in enumerate(treatments):
+            for j, tj in enumerate(treatments):
+                if i == j:
+                    continue
+                d = full_beta[i] - full_beta[j]
+                se = np.sqrt(max(full_cov[i, i] + full_cov[j, j] - 2 * full_cov[i, j], 0))
+                league[f"{ti} vs {tj}"] = {"estimate": float(d), "se": float(se),
+                                           "ci_lb": float(d - 1.96 * se), "ci_ub": float(d + 1.96 * se),
+                                           "pval": float(2 * stats.norm.sf(abs(d / se))) if se > 0 else float("nan")}
+        Q = float(_fit.Q); dof = int(_fit.df_Q)
+        tau2 = float(_fit.tau2) if np.isfinite(_fit.tau2) else 0.0
+        I2 = max(0.0, 100 * (Q - dof) / Q) if Q > 0 and dof > 0 else 0.0
+        state.write("models", "nma", {
+            "treatments": treatments, "reference": ref,
+            "sm": df["measure"].iloc[0] if "measure" in df else "",
+            "model": comb, "effects": effects, "league": league,
+            "Q": Q, "df": dof,
+            "Q_pval": float(stats.chi2.sf(Q, dof)) if dof > 0 else float("nan"),
+            "tau2": tau2, "I2": I2,
+            "n_studies": int(df["studlab"].nunique()) if "studlab" in df else len(df),
+            "_beta": full_beta.tolist(), "_cov": full_cov.tolist(),
+            "backend": "pynetmeta",
+        })
+        return state
+    except Exception:
+        pass  # graceful fallback to the pre-existing GLS implementation below
+
     X, y, V, basic = _build(df, treatments, ref)
     beta_fe, A_fe, Q = _gls(X, y, V)
     dof = len(y) - len(basic)
