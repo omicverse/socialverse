@@ -184,6 +184,33 @@ def pointbiserial_to_d(state: StudyState, **kwargs: Any) -> StudyState:
     return _store(state, _passthrough(df, kwargs, d, vi, "SMD"), kwargs.get("append", True))
 
 
+# ---------------------------------------------------------- POMP severity
+@_reg("es_pomp", ["POMP分数", "pomp", "percent_of_max"],
+      "POMP 分数(percent of maximum possible):把任意量表的均值±SD 线性重标定到 0–100,供严重程度 meta 跨量表合并((mean−min)/(max−min)×100)")
+def es_pomp(state: StudyState, **kwargs: Any) -> StudyState:
+    """Percent-of-maximum-possible severity effect size (Dreisoerner et al. 2026).
+
+    kwargs: ``mean``,``sd``,``n`` columns + scale bounds — either per-row columns
+    ``smin=``/``smax=`` or scalars ``min_val=``/``max_val=``. Produces yi = POMP mean
+    = (mean−min)/(max−min)·100, vi = sd_pomp²/n. ``reverse=True`` for positive-
+    wellbeing scales (higher = better → reverse-coded so higher POMP = worse)."""
+    df = _resolve_df(state, kwargs)
+    m = _col(df, kwargs.get("mean") or kwargs.get("m")); sd = _col(df, kwargs.get("sd")); n = _col(df, kwargs.get("n"))
+    if m is None or sd is None or n is None:
+        return state
+    m, sd, n = m.to_numpy(float), sd.to_numpy(float), n.to_numpy(float)
+    lo_c = _col(df, kwargs.get("smin")); hi_c = _col(df, kwargs.get("smax"))
+    lo = lo_c.to_numpy(float) if lo_c is not None else float(kwargs.get("min_val", 0.0))
+    hi = hi_c.to_numpy(float) if hi_c is not None else float(kwargs.get("max_val", 100.0))
+    rng = np.asarray(hi, float) - np.asarray(lo, float)
+    pomp = (m - lo) / rng * 100.0
+    sd_pomp = sd / rng * 100.0
+    vi = sd_pomp ** 2 / n
+    if kwargs.get("reverse", False):
+        pomp = 100.0 - pomp
+    return _store(state, _passthrough(df, kwargs, pomp, vi, "POMP"), kwargs.get("append", True))
+
+
 # ---------------------------------------------------------- dependency collapse
 @register(
     name="ma_aggregate",

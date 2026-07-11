@@ -149,6 +149,29 @@ def test_rma_mv_recovers_two_level_total_heterogeneity():
     assert mv["converged"]
 
 
+def test_rma_mv_knapp_hartung_widens_ci():
+    """KH (t-reference, df=k−p) widens the CI vs normal; point estimate unchanged."""
+    rng = np.random.default_rng(3)
+    rows = []
+    for st in range(12):
+        u3 = rng.normal(0, 0.3)
+        for _ in range(int(rng.integers(1, 4))):
+            n = int(rng.integers(50, 300)); p = 1 / (1 + np.exp(-(-0.4 + u3 + rng.normal(0, 0.2))))
+            rows.append({"study": f"S{st}", "cases": int(rng.binomial(n, p)), "n": n})
+    data = pd.DataFrame(rows)
+
+    def fit(kh):
+        s = sv.StudyState(); s.write("sources", "datasets", data)
+        sv.pp.escalc(s, measure="PAS", cases="cases", n="n", study="study")
+        sv.tl.vcalc(s, cluster="study", rho=0.6)
+        sv.tl.rma_mv(s, study="study", knapp_hartung=kh)
+        return s.models["meta"]
+    z, t = fit(False), fit(True)
+    assert t["estimate"] == pytest.approx(z["estimate"], abs=1e-9)
+    assert (t["ci_ub"] - t["ci_lb"]) > (z["ci_ub"] - z["ci_lb"])
+    assert t["knapp_hartung"] and t["df"] == z["k"] - 1
+
+
 def test_rma_mv_three_level_decomposition_runs():
     rng = np.random.default_rng(1)
     rows = []

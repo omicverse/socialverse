@@ -353,7 +353,8 @@ def rma_mv(state: StudyState, **kwargs: Any) -> StudyState:
     Uses ``models['meta_V']`` (from ``sv.tl.vcalc``) if present, else diag(vi).
     Random structure: level-3 between-**study** (σ²₃) + level-2 within-study /
     between-**effect** (σ²₂). kwargs: ``study=`` column (grouping; default
-    ``'study'``), ``moderators=`` for a multilevel meta-regression, ``method='REML'``.
+    ``'study'``), ``moderators=`` for a multilevel meta-regression, ``method='REML'``,
+    ``knapp_hartung=True`` (t-reference with df = k−p for CIs/p, metafor ``test="t"``).
     The engine behind the ECR-style prevalence/severity meta.
     """
     eff = _effects(state)
@@ -371,16 +372,26 @@ def rma_mv(state: StudyState, **kwargs: Any) -> StudyState:
     fit = _reml_3level(y, V, X, study, ml=(str(kwargs.get("method", "REML")).upper() == "ML"))
     beta, se = fit["beta"], fit["se"]
     tstat = beta / se
+    # Knapp-Hartung: reference the coefficient tests to a t-distribution with
+    # df = k - p (metafor rma.mv test="t"), instead of the normal — materially
+    # affects CI/p when k is small. This is the multilevel analog of HKSJ.
+    hk = bool(kwargs.get("knapp_hartung", kwargs.get("test", "") in ("t", "knha")))
+    dfree = max(fit["k"] - X.shape[1], 1)
+    crit = float(stats.t.ppf(0.975, dfree)) if hk else 1.959963985
+
+    def _p(t):
+        return float(2 * stats.t.sf(abs(t), dfree)) if hk else float(2 * stats.norm.sf(abs(t)))
     coefs = {name: {"estimate": float(beta[i]), "se": float(se[i]),
-                    "zval": float(tstat[i]), "pval": float(2 * stats.norm.sf(abs(tstat[i]))),
-                    "ci_lb": float(beta[i] - 1.96 * se[i]), "ci_ub": float(beta[i] + 1.96 * se[i])}
+                    "zval": float(tstat[i]), "pval": _p(tstat[i]),
+                    "ci_lb": float(beta[i] - crit * se[i]), "ci_ub": float(beta[i] + crit * se[i])}
              for i, name in enumerate(Xcols)}
     out = {
         "model": "multilevel(3-level)", "method": kwargs.get("method", "REML"),
-        "coefs": coefs, "terms": Xcols, "moderators": mod_names,
+        "coefs": coefs, "terms": Xcols, "moderators": mod_names, "p": X.shape[1],
         "sigma2_2": fit["sigma2_2"], "sigma2_3": fit["sigma2_3"],
         "sigma2_total": fit["sigma2_total"], "tau2": fit["sigma2_total"],
         "k": fit["k"], "n_studies": fit["n_studies"], "converged": fit["converged"],
+        "knapp_hartung": hk, "df": dfree if hk else None,
     }
     # convenience top-level for the intercept (the pooled estimate)
     ic = coefs.get("(intercept)", {})
