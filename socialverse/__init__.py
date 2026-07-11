@@ -37,7 +37,7 @@ from ._slots import SLOTS, VALID_SLOTS  # noqa: F401
 from ._state import StudyState  # noqa: F401
 from ._style import plot_set, resolve_publication_font, style  # noqa: F401
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 # Import submodules for their side effect: each module's @register calls populate
 # the singleton registry. Wrapped in a guard so a missing optional dep in one
@@ -72,6 +72,10 @@ except Exception:  # pragma: no cover - never let the compat layer break import
 # the OmicOS-facing query surface (sv.utils.registry_lookup / registry_summary) —
 # imported after the analysis modules so the registry is fully populated.
 from . import utils  # noqa: E402,F401
+
+# expose the toy-dataset loaders as sv.datasets (mirrors ov.datasets) so
+# `sv.datasets.load_bcg()` works, not only `from socialverse import datasets`.
+from . import datasets  # noqa: E402,F401
 
 # expose the phase namespaces if they imported
 for _n in _SUBMODULES:
