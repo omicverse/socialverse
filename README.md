@@ -204,6 +204,34 @@ print(study.models["did"])                     # point estimate, confidence inte
 | Multilevel (mixed-effects) models | `sv.tl.multilevel` |
 | Survival analysis (Cox / KM / time-varying covariates / log-rank / PH diagnostics) | `sv.tl.survival` |
 
+### Meta-analysis / Evidence synthesis
+
+Native (numpy/scipy) reimplementation of the metafor core — **no R dependency**.
+The full multilevel prevalence/severity workflow (3-level `rma.mv`, heterogeneity
+decomposition, meta-regression + FDR, publication bias, forest/funnel).
+
+| Method | Function |
+| ---------------------------------------------------- | ------------------ |
+| Effect-size prep: proportion (logit/arcsine/FT), SMD/Hedges g, log-OR/RR/RD, Fisher z, generic CI | `sv.pp.escalc` · `sv.pp.es_proportion` · `sv.pp.es_from_means` · `sv.pp.es_from_2x2` · `sv.pp.es_from_r` |
+| Fixed / random-effects pooling (DL / REML / ML τ², Knapp-Hartung) | `sv.tl.meta_fixed` · `sv.tl.meta_random` |
+| Multilevel / 3-level meta with known sampling covariance V (`rma.mv` equivalent) | `sv.tl.vcalc` · `sv.tl.rma_mv` |
+| Heterogeneity (Q / I² / H² / τ) + 3-level I² decomposition + prediction interval | `sv.tl.meta_heterogeneity` · `sv.tl.ma_i2_multilevel` · `sv.tl.meta_prediction_interval` |
+| Meta-regression on moderators + Benjamini-Hochberg FDR | `sv.tl.metareg` · `sv.tl.metareg_fdr` |
+| More effect-size converters: from t/F/χ²/p, ratio-of-means, single-arm, incidence rate, Cohen's h, point-biserial | `sv.pp.es_from_t` · `sv.pp.es_ratio_of_means` · `sv.pp.es_from_ir` · `sv.pp.cohens_h` |
+| Full τ² roster (DL/REML/ML/PM/SJ/HS/HE) + Q-profile τ²/I² CI + proportion back-transform + subgroup Q_between | `sv.tl.meta_random` · `sv.tl.tau2_ci` · `sv.tl.backtransform_proportion` · `sv.tl.subgroup` |
+| Rare-event 2×2 pooling (Mantel-Haenszel, Peto) | `sv.tl.meta_mh` · `sv.tl.meta_peto` |
+| Publication bias: trim-and-fill, PET/PEESE, Begg, fail-safe N, excess significance | `sv.tl.trim_and_fill` · `sv.tl.pet_peese` · `sv.tl.begg_test` · `sv.tl.excess_significance` |
+| Robust variance for dependent effects (CR0/CR1/**CR2**), CHE & robumeta working models, permutation test | `sv.tl.ma_robust` · `sv.tl.ma_che` · `sv.tl.robu` · `sv.tl.metareg_permutest` |
+| Influence / sensitivity: leave-one-out, cumulative, Cook's D / DFFITS, outlier refit | `sv.tl.leave_one_out` · `sv.tl.cumulative_ma` · `sv.tl.influence` |
+| Small-study effects / funnel asymmetry (Egger) + contour funnel + Baujat | `sv.tl.egger_test` · `sv.pl.funnel_contour` · `sv.pl.baujat` |
+| Forest plot (pooled diamond + prediction interval) · funnel plot | `sv.pl.meta_forest` · `sv.pl.funnel` |
+| Systematic-review governance: PRISMA flow + 27-item checklist, RoB2/ROBINS-I/JBI, screening κ/AC1, GRADE | `sv.gov.prisma_flow` · `sv.gov.risk_of_bias` · `sv.gov.screen_agreement` · `sv.gov.grade` |
+| **Network meta-analysis** (frequentist graph-theoretical, multi-arm; P-score/SUCRA, node-splitting, component NMA) | `sv.pp.nma_pairwise` · `sv.tl.netmeta` · `sv.tl.netrank` · `sv.tl.netsplit` · `sv.tl.netcomb` · `sv.pl.netgraph` |
+| **Diagnostic test accuracy** (Reitsma bivariate → SROC) · **dose-response** (Greenland-Longnecker + RCS spline) | `sv.tl.dta_bivariate` · `sv.pl.sroc` · `sv.tl.dosresmeta` · `sv.tl.dosresmeta_spline` |
+| **IPD** (two-stage / one-stage mixed) · **semi-analytic Bayesian** meta & meta-regression (no MCMC) | `sv.tl.ipd_twostage` · `sv.tl.ipd_onestage` · `sv.tl.bayesmeta` · `sv.tl.bayes_metareg` |
+| **Selection models** (Vevea-Hedges), p-curve, p-uniform, selection sensitivity (S-value) | `sv.tl.selection_model_stepfun` · `sv.tl.pcurve` · `sv.tl.puniform` · `sv.tl.pubbias_sensitivity` |
+| Advanced diagnostics: metaforest, LRT, profile-CI, cluster wild bootstrap, multimodel AICc, GOSH | `sv.tl.metaforest` · `sv.tl.ma_lrt` · `sv.tl.ma_cwb_test` · `sv.tl.metareg_multimodel` · `sv.pl.gosh` |
+
 ### Spatial / Network / Set-Theoretic Methods
 
 | Method | Function |

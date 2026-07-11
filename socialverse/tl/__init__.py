@@ -32,3 +32,15 @@ from ._setmethods import *    # noqa: F401,F403
 from ._demography import *    # noqa: F401,F403
 from ._stylometry import *    # noqa: F401,F403
 from ._network2 import *      # noqa: F401,F403
+from ._meta import *          # noqa: F401,F403
+from ._meta2 import *         # noqa: F401,F403
+from ._meta_bias import *     # noqa: F401,F403
+from ._meta_diag import *     # noqa: F401,F403
+from ._meta_rve import *      # noqa: F401,F403
+from ._meta_nma import *      # noqa: F401,F403
+from ._meta_dta import *   # noqa: F401,F403
+from ._meta_dose import *   # noqa: F401,F403
+from ._meta_ipd import *   # noqa: F401,F403
+from ._meta_bayes import *   # noqa: F401,F403
+from ._meta_selection import *   # noqa: F401,F403
+from ._meta_adv import *   # noqa: F401,F403
