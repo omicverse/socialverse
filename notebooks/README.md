@@ -1,6 +1,6 @@
 # socialverse 教程
 
-21 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
+28 本可端到端运行、**带真实输出**的教学 notebook。风格参照 [omicverse_guide](https://github.com/Starlitnightly/omicverse):每本先把一种社会科学 / 人文的分析方法讲清楚——它解决什么问题、关键前提是什么、要走哪几步——再用 `socialverse` 顺手地跑通它,结尾留下一份可复现的证据链。多数用内置玩具数据([`socialverse.datasets`](../socialverse/datasets/)),已在真实环境执行,输出与图表齐全。
 
 > **[21 · 复现因果 ML 教科书案例:401(k) 资格对家庭财富(DML + 异质效应 + DAG)](21_reproduction_401k_dml_cate.ipynb)** 用 SIPP 1991 **公开微数据**端到端复现 Chernozhukov 等 (2018) 的 DML 运行案例,走一整条**现代因果链**:因果图识别 `sv.tl.dag_identify` → 双重机器学习 `sv.tl.dml` → 因果森林异质效应 `sv.tl.causal_forest` → 反驳 `sv.tl.dag_refute`。socialverse 的 **DML ATE ≈ \$9,900 与报告的 ~\$9,000 吻合**(朴素差 \$19.5k 偏高一倍),森林揭示效应随收入从 ~\$0 到 ~\$22k 的强异质。这本展示 0.3.0 新补的**现代因果三大件**(对标 DoWhy/EconML,全原生实现)。
 >
@@ -68,6 +68,22 @@ jupyter lab notebooks/       # 逐格运行;或直接阅读已执行的 .ipynb
 | 09 | [核验一份参考文献,揪出稿件里的幻觉引用](09_literature_citation.ipynb) | Zotero + CrossRef/OpenAlex |
 | 10 | [一次可复核的小型研究:从伦理审查到证据链](10_full_study_evidence_chain.ipynb) | socialverse 的差异化收束 |
 
+## 证据合成 / Meta 分析
+
+`socialverse` 的 meta 分析模块是 **metafor 核心的原生(numpy/scipy)重写——不依赖 R,也不用 MCMC**。
+7 本教程串起 95 个函数,从效应量一路走到网络 meta、诊断准确性、贝叶斯与系统综述治理。**入门那本
+用真实的卡介苗数据,合并结果与 `metafor` 逐位吻合**(随机效应 log-RR = −0.7145,τ² = 0.313,I² = 92%)。
+
+| # | 教程 | 对标 |
+|---|---|---|
+| 22 | [Meta 分析入门:从效应量到合并估计(卡介苗试验,复现 metafor)](22_meta_analysis_basics.ipynb) | R `metafor::rma` / `meta` · Stata `meta` |
+| 23 | [多层与稳健 meta:依赖效应量怎么办(三层 rma.mv + CR2)](23_multilevel_and_robust_meta.ipynb) | R `metafor::rma.mv` · `clubSandwich` · `robumeta` |
+| 24 | [元回归与调节变量:异质性从哪来](24_meta_regression_and_moderators.ipynb) | R `metafor`(mods) · `metaforest` · `MuMIn` |
+| 25 | [发表偏倚与稳健性:结论经得起推敲吗](25_publication_bias_and_sensitivity.ipynb) | R `metafor` · `weightr` · `puniform` · `dmetar` |
+| 26 | [网络 meta 分析:多种干预放到一起比](26_network_meta_analysis.ipynb) | R `netmeta` · `gemtc` |
+| 27 | [特殊设计:诊断准确性、剂量反应、IPD 与贝叶斯](27_specialized_designs.ipynb) | R `mada` · `dosresmeta` · `bayesmeta` |
+| 28 | [系统综述闭环:PRISMA、偏倚风险、GRADE 与端到端](28_systematic_review_governance.ipynb) | PRISMA 2020 · RoB2 · `robvis` · GRADEpro |
+
 ---
 
-这 16 本覆盖 registry 现有全部函数。每种方法的依赖契约(requires/produces/prerequisites/auto_fix)与对标的现实 Py/R 包,见 [../docs/CONTRACT_CARDS.md](../docs/CONTRACT_CARDS.md);整个人文社科计算生态的调研与设计依据,见 [../docs/LANDSCAPE.md](../docs/LANDSCAPE.md)。
+这 28 本覆盖 registry 现有全部函数(含 95 个 meta 分析函数)。每种方法的依赖契约(requires/produces/prerequisites/auto_fix)与对标的现实 Py/R 包,见 [../docs/CONTRACT_CARDS.md](../docs/CONTRACT_CARDS.md);整个人文社科计算生态的调研与设计依据,见 [../docs/LANDSCAPE.md](../docs/LANDSCAPE.md)。
