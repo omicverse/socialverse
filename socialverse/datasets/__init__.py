@@ -13,6 +13,10 @@ from ._toy_meta import (  # noqa: F401
     load_bcg, load_meta_prevalence, load_meta_smd, load_dta_accuracy,
     load_network_trials, load_dose_response,
 )
+from ._toy_social import (  # noqa: F401
+    load_wages, load_vote, load_values, load_protest, load_coding,
+    load_wellbeing, load_complex_survey, load_speeches,
+)
 
 __all__ = [
     "load_did_panel", "load_did_staggered", "load_survey", "load_corpus", "load_bib",
