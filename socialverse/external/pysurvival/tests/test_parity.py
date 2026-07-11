@@ -2,7 +2,7 @@ import json, pathlib, sys
 import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
-from pysurvival import km, coxph
+from pysurvival import km, coxph, clogit, survreg
 REF = json.loads((HERE / "reference.json").read_text())
 TOL = 1e-6
 
@@ -42,3 +42,41 @@ def test_cox_breslow():
 def test_cox_concordance():
     X, d = _X(); r = coxph(d["time"], _event(d["status"]), X, ties="efron")
     _c("cox.concordance", r.concordance, REF["cox_efron"]["concordance"], tol=1e-3)
+
+# --- clogit: conditional logistic (matched case-control, infert) ---
+def test_clogit():
+    d = REF["clogit_data"]; ref = REF["clogit"]
+    X = np.column_stack([d["spontaneous"], d["induced"]]).astype(float)
+    r = clogit(d["case"], d["stratum"], X)
+    _c("clogit.coef", r.coef, ref["coef"])
+    _c("clogit.se", r.se, ref["se"])
+    _c("clogit.loglik", r.loglik, ref["loglik"])
+
+# --- survreg: parametric AFT MLE (Weibull / exponential / lognormal, lung) ---
+def _survreg_X():
+    d = REF["survreg_data"]
+    X = np.column_stack([np.ones_like(d["time"], float), d["age"], d["sex"]])
+    return X, d
+
+def test_survreg_weibull():
+    X, d = _survreg_X(); ref = REF["survreg_weibull"]
+    r = survreg(d["time"], d["status"], X, dist="weibull")
+    _c("survreg.wb.coef", r.coef, ref["coef"])
+    _c("survreg.wb.scale", r.scale, ref["scale"])
+    _c("survreg.wb.se", r.se, ref["se"])
+    _c("survreg.wb.loglik", r.loglik, ref["loglik"])
+
+def test_survreg_exponential():
+    X, d = _survreg_X(); ref = REF["survreg_exp"]
+    r = survreg(d["time"], d["status"], X, dist="exponential")
+    _c("survreg.exp.coef", r.coef, ref["coef"])
+    _c("survreg.exp.se", r.se, ref["se"])
+    _c("survreg.exp.loglik", r.loglik, ref["loglik"])
+
+def test_survreg_lognormal():
+    X, d = _survreg_X(); ref = REF["survreg_lognormal"]
+    r = survreg(d["time"], d["status"], X, dist="lognormal")
+    _c("survreg.ln.coef", r.coef, ref["coef"])
+    _c("survreg.ln.scale", r.scale, ref["scale"])
+    _c("survreg.ln.se", r.se, ref["se"])
+    _c("survreg.ln.loglik", r.loglik, ref["loglik"])

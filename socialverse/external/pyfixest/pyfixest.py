@@ -196,3 +196,245 @@ def feols(y, X, fe, cluster):
         "n_clusters": G,
         "resid": resid,
     }
+
+
+# --------------------------------------------------------------------------
+# weighted demeaning (for the Poisson IRLS working response)
+# --------------------------------------------------------------------------
+def _wgroup_demean(col, w, codes, n_levels):
+    """Subtract weighted group means of one column (weights ``w``)."""
+    wsum = np.bincount(codes, weights=w, minlength=n_levels)
+    wxsum = np.bincount(codes, weights=w * col, minlength=n_levels)
+    means = wxsum / wsum
+    return col - means[codes]
+
+
+def _wdemean(M, w, fe_codes, tol=1e-13, maxit=100000):
+    """Weighted partialling-out of the FE from every column of ``M``.
+
+    Uses weighted alternating projections with weights ``w`` (the IRLS
+    working weights).  Exact for one-way FE in a single sweep; iterates to
+    convergence for multi-way FE.
+    """
+    M = np.asarray(M, float).copy()
+    if M.ndim == 1:
+        M = M[:, None]
+    if len(fe_codes) == 1:
+        codes, nl = fe_codes[0]
+        for j in range(M.shape[1]):
+            M[:, j] = _wgroup_demean(M[:, j], w, codes, nl)
+        return M
+    for _ in range(maxit):
+        M_old = M.copy()
+        for codes, nl in fe_codes:
+            for j in range(M.shape[1]):
+                M[:, j] = _wgroup_demean(M[:, j], w, codes, nl)
+        if np.max(np.abs(M - M_old)) < tol:
+            break
+    return M
+
+
+# --------------------------------------------------------------------------
+# Poisson pseudo-ML with high-dimensional fixed effects (PPML)
+# --------------------------------------------------------------------------
+def fepois(y, X, fe, cluster=None, tol=1e-10, maxit=1000):
+    """PPML (Poisson pseudo-maximum-likelihood) with HD fixed effects.
+
+    Matches ``fixest::fepois(y ~ X | fe, cluster = ~cluster)`` (fixest
+    0.14.2, class-1 deterministic) for panels where no FE group is dropped
+    for all-zero outcomes / singletons.
+
+    Algorithm — IRLS on the Poisson log-link.  At each iteration the working
+    weights are ``w = mu`` and the working response is
+    ``z = eta + (y - mu) / mu``.  The FE are partialled out of ``X`` and of
+    ``z`` by *weighted* alternating within-demeaning (weights ``w``), so the
+    fixed effects are concentrated out rather than carried as explicit
+    dummies.  The slope solves the weighted demeaned normal equations
+    ``(X~' W X~) b = X~' W z~`` and ``eta`` is updated from the implied fit;
+    iterating to convergence of the deviance.
+
+    Standard errors
+    ---------------
+    The observation score is ``s_i = X~_i (y_i - mu_i)`` (the demeaned
+    regressor times the raw Poisson residual — this is the gradient of the
+    concentrated log-likelihood).  The bread is ``(X~' W X~)^-1``.  Clustered
+    vcov:
+
+        V = bread [ sum_g (sum_{i in g} s_i)(...)' ] bread * c
+
+    with the *same* fixest nested small-sample correction as :func:`feols`,
+    ``c = G/(G-1) * (N-1)/(N-K)`` where ``K`` counts the slopes plus one for
+    the intercept revealed by a cluster-nested FE.
+
+    Parameters
+    ----------
+    y : (N,) count outcome
+    X : (N,) or (N, p) regressors (no intercept; FE absorb it)
+    fe : array-like or list of array-likes — FE grouping vector(s)
+    cluster : array-like or None — cluster grouping (defaults to first FE)
+
+    Returns
+    -------
+    dict with keys: coef (p,), se (p,), vcov (p,p), mu (N,), eta (N,),
+    deviance (float), nobs, n_clusters, n_iter.
+    """
+    y = np.asarray(y, float).ravel()
+    X = np.asarray(X, float)
+    if X.ndim == 1:
+        X = X[:, None]
+    N, p = X.shape
+
+    if isinstance(fe, (list, tuple)) and np.ndim(fe[0]) == 1:
+        fe_list = [np.asarray(f) for f in fe]
+    else:
+        fe_list = [np.asarray(fe)]
+    fe_codes = [_factorize(f) for f in fe_list]
+
+    if cluster is None:
+        cluster_codes, G = fe_codes[0][0], fe_codes[0][1]
+    else:
+        cluster_codes, G = _factorize(cluster)
+
+    # IRLS.  Initialise mu à la fixest/glm: mu0 = (y + mean(y)) / 2.
+    mu = (y + y.mean()) / 2.0
+    eta = np.log(mu)
+    beta = np.zeros(p)
+
+    def _deviance(y_, mu_):
+        # Poisson deviance; y*log(y/mu) -> 0 as y -> 0.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = np.where(y_ > 0, y_ * np.log(y_ / mu_), 0.0)
+        return 2.0 * np.sum(t - (y_ - mu_))
+
+    dev_old = _deviance(y, mu)
+    n_iter = 0
+    for n_iter in range(1, maxit + 1):
+        w = mu                                   # IRLS working weights
+        z = eta + (y - mu) / mu                  # working response
+        Xw = _wdemean(X, w, fe_codes)
+        zw = _wdemean(z, w, fe_codes).ravel()
+
+        WX = w[:, None] * Xw
+        XtWX = Xw.T @ WX
+        XtWz = Xw.T @ (w * zw)
+        beta = np.linalg.solve(XtWX, XtWz)
+
+        # eta update: recover FE contribution from the fit.  With eta = z - r
+        # where r is the working residual orthogonal (in W-metric) to the FE,
+        #   eta_new = z - (zw - Xw beta)
+        resid_w = zw - Xw @ beta
+        eta = z - resid_w
+        mu = np.exp(eta)
+
+        dev = _deviance(y, mu)
+        if abs(dev - dev_old) / (abs(dev) + 0.1) < tol:
+            dev_old = dev
+            break
+        dev_old = dev
+
+    # final bread & scores at convergence
+    w = mu
+    Xw = _wdemean(X, w, fe_codes)
+    XtWX = Xw.T @ (w[:, None] * Xw)
+    bread = np.linalg.inv(XtWX)
+    scores = Xw * (y - mu)[:, None]              # (N, p) gradient contributions
+
+    meat = np.zeros((p, p))
+    for g in range(G):
+        s_g = scores[cluster_codes == g].sum(axis=0)
+        meat += np.outer(s_g, s_g)
+    V_raw = bread @ meat @ bread
+
+    # fixest nested small-sample correction (same rule as feols)
+    K = p
+    any_nested = False
+    for i in range(len(fe_codes)):
+        if _is_nested(fe_codes[i], cluster_codes):
+            any_nested = True
+    if any_nested:
+        K += 1
+    correction = (G / (G - 1.0)) * ((N - 1.0) / (N - K))
+    V = V_raw * correction
+    se = np.sqrt(np.diag(V))
+
+    return {
+        "coef": beta,
+        "se": se,
+        "vcov": V,
+        "mu": mu,
+        "eta": eta,
+        "deviance": dev_old,
+        "nobs": N,
+        "n_clusters": G,
+        "n_iter": n_iter,
+    }
+
+
+# --------------------------------------------------------------------------
+# Newey-West HAC (heteroskedasticity + autocorrelation consistent) vcov
+# --------------------------------------------------------------------------
+def newey_west(y, X, lag, add_intercept=True, order=None):
+    """OLS with a Newey-West (Bartlett-kernel) HAC vcov, fixest-compatible.
+
+    Matches ``feols(y ~ X)`` re-summarised with ``vcov = NW(lag) ~ t``
+    (fixest 0.14.2 default ssc, ``adj=TRUE``).
+
+    The meat is the Bartlett-weighted sum of score autocovariances
+
+        S = Gamma_0 + sum_{l=1}^{L} (1 - l/(L+1)) (Gamma_l + Gamma_l')
+
+    with score ``s_t = X_t * e_t``, ``Gamma_l = sum_t s_t s_{t-l}'``, sandwiched
+    by ``(X'X)^-1`` and scaled by the fixest degrees-of-freedom adjustment
+    ``N/(N-K)`` (``K`` = number of estimated coefficients incl. intercept).
+
+    Parameters
+    ----------
+    y : (N,) outcome
+    X : (N,) or (N, p) regressors (no intercept column)
+    lag : int — the HAC truncation lag L
+    add_intercept : bool — prepend an intercept column (fixest default)
+    order : array-like or None — time ordering of the rows.  If given, rows
+        are sorted by it before forming autocovariances (NW is order-aware).
+
+    Returns
+    -------
+    dict with keys: coef (p,), se (p,), vcov (p,p), resid (N,), nobs, nparams.
+    """
+    y = np.asarray(y, float).ravel()
+    X = np.asarray(X, float)
+    if X.ndim == 1:
+        X = X[:, None]
+
+    if order is not None:
+        perm = np.argsort(np.asarray(order), kind="stable")
+        y = y[perm]
+        X = X[perm]
+
+    N = X.shape[0]
+    if add_intercept:
+        X = np.column_stack([np.ones(N), X])
+    K = X.shape[1]
+
+    XtX_inv = np.linalg.inv(X.T @ X)
+    beta = XtX_inv @ (X.T @ y)
+    resid = y - X @ beta
+
+    scores = X * resid[:, None]                  # (N, K)
+    S = scores.T @ scores                        # Gamma_0
+    for l in range(1, lag + 1):
+        w = 1.0 - l / (lag + 1.0)                # Bartlett weight
+        Gl = scores[l:].T @ scores[:-l]          # Gamma_l = sum_t s_t s_{t-l}'
+        S += w * (Gl + Gl.T)
+
+    V = XtX_inv @ S @ XtX_inv
+    V *= N / (N - K)                             # fixest adj=TRUE for HAC
+    se = np.sqrt(np.diag(V))
+
+    return {
+        "coef": beta,
+        "se": se,
+        "vcov": V,
+        "resid": resid,
+        "nobs": N,
+        "nparams": K,
+    }

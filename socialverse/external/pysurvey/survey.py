@@ -18,7 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import linalg, stats
 
-__all__ = ["svydesign", "svymean", "svytotal", "svyglm", "SurveyDesign"]
+__all__ = ["svydesign", "svymean", "svytotal", "svyglm", "SurveyDesign",
+           "svyby", "svyratio", "svyciprop"]
 
 
 @dataclass
@@ -156,3 +157,91 @@ def svyglm(y, X, design: SurveyDesign, level=95.0, add_intercept=True):
     return {"coef": beta, "se": se, "df": df,
             "tval": tval, "pval": 2 * stats.t.sf(np.abs(tval), df),
             "ci_lb": beta - crit * se, "ci_ub": beta + crit * se}
+
+
+def svyby(y, by, design: SurveyDesign, stat="svymean", level=95.0):
+    """Domain (subpopulation) ``svymean``/``svytotal`` per level of ``by``.
+
+    Matches R ``survey::svyby``: each domain statistic is computed as a
+    **whole-sample linearized statistic** (the domain indicator enters the
+    linearized variable, and the variance is taken over the *full* design —
+    all strata/PSUs — NOT by re-declaring a design on the subset). This is
+    what makes the domain SE differ from a naive ``svymean`` on a subset.
+
+    y     : response column name (or array).
+    by    : grouping column name (or array) — one statistic per distinct level.
+    stat  : ``"svymean"`` or ``"svytotal"``.
+    Returns dict: ``levels`` (sorted), ``estimate`` (per level), ``se``, ``df``.
+    """
+    yv = design.y_cols[y] if isinstance(y, str) else np.asarray(y, float)
+    gv = design.y_cols[by] if isinstance(by, str) else np.asarray(by)
+    w = design.weights
+    levels = sorted(np.unique(gv).tolist())
+    ests, ses = [], []
+    for lev in levels:
+        dom = (gv == lev)                      # domain indicator, whole sample
+        wd = w * dom                           # weight zeroed outside domain
+        if stat == "svymean":
+            swd = wd.sum()
+            est = float((wd * yv).sum() / swd)
+            # domain-mean linearized total variable, defined on ALL elements
+            z = wd * (yv - est) / swd
+        elif stat == "svytotal":
+            z = wd * yv
+            est = float(z.sum())
+        else:  # pragma: no cover
+            raise ValueError(f"unsupported stat: {stat!r}")
+        ests.append(est)
+        ses.append(float(np.sqrt(_vcov_total(z, design))))
+    return {"levels": levels, "estimate": np.asarray(ests, float),
+            "se": np.asarray(ses, float), "df": design.degf}
+
+
+def svyratio(num, den, design: SurveyDesign, level=95.0):
+    """Design-based ratio ``R = Σ wᵢ numᵢ / Σ wᵢ denᵢ`` with Taylor-linearized SE.
+
+    The ratio is a smooth function of two totals; its influence function is
+    ``zᵢ = wᵢ (numᵢ − R·denᵢ) / Σ wⱼ denⱼ`` and ``V(R) = V(Σ zᵢ)`` under the
+    ultimate-cluster estimator (identical machinery as ``svymean``).
+    """
+    nv = design.y_cols[num] if isinstance(num, str) else np.asarray(num, float)
+    dv = design.y_cols[den] if isinstance(den, str) else np.asarray(den, float)
+    w = design.weights
+    tden = float((w * dv).sum())
+    R = float((w * nv).sum() / tden)
+    z = w * (nv - R * dv) / tden               # linearized total variable
+    se = float(np.sqrt(_vcov_total(z, design)))
+    df = design.degf
+    crit = _crit(level, df)
+    return {"estimate": R, "se": se, "df": df,
+            "ci_lb": R - crit * se, "ci_ub": R + crit * se}
+
+
+def svyciprop(y, design: SurveyDesign, level=95.0):
+    """Confidence interval for a survey proportion via the **logit** method
+    (R ``svyciprop(..., method="logit")``, the package default).
+
+    ``survey`` fits an intercept-only ``quasibinomial`` ``svyglm`` and takes
+    ``expit(β ± t·SE(β))``.  For an intercept-only model the sandwich reduces
+    to the delta method around the weighted proportion, so equivalently:
+
+        p        = weighted mean of the 0/1 indicator
+        SE(p)    = linearized SE (svymean)
+        β        = logit(p),   SE(β) = SE(p) / (p(1−p))
+        CI       = expit(β ± qt(level, degf)·SE(β))
+
+    The point estimate returned is ``p`` and its variance is ``V(p)`` (matching
+    R's ``coef``/``attr(.,"var")``); the interval is on the logit scale.
+    """
+    yv = design.y_cols[y] if isinstance(y, str) else np.asarray(y, float)
+    m = svymean(yv, design, level=level)
+    p, se_p = m["estimate"], m["se"]
+    df = design.degf
+    crit = _crit(level, df)
+    beta = np.log(p / (1.0 - p))               # logit(p)
+    se_beta = se_p / (p * (1.0 - p))           # delta-method SE on logit scale
+    lo = beta - crit * se_beta
+    hi = beta + crit * se_beta
+    expit = lambda x: 1.0 / (1.0 + np.exp(-x))
+    return {"estimate": p, "var": se_p ** 2, "se": se_p, "df": df,
+            "ci_lb": float(expit(lo)), "ci_ub": float(expit(hi))}

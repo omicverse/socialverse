@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import linalg, stats
 
-__all__ = ["rma", "RMAResult"]
+__all__ = ["rma", "RMAResult", "blup", "BLUPResult"]
 
 
 @dataclass
@@ -44,6 +44,11 @@ class RMAResult:
     QM: float | None = None
     QMp: float | None = None
     s2w: float = field(default=float("nan"))  # typical within-study variance
+    # --- inputs retained for downstream predictors (blup, etc.) ---
+    yi: np.ndarray | None = None            # observed effects
+    vi: np.ndarray | None = None            # sampling variances
+    X: np.ndarray | None = None             # design matrix (incl. intercept)
+    vb: np.ndarray | None = None            # Var(β̂), un-shrunk fixed-effect part
 
     def predict(self, level: float = 95.0):
         """Fitted value + confidence & prediction interval for the average effect
@@ -272,4 +277,69 @@ def rma(yi, vi, mods=None, method="REML", test="z", level=95.0, add_intercept=Tr
         tau2=float(tau2), se_tau2=se_tau2, I2=float(I2), H2=float(H2),
         QE=QE, QEp=QEp, k=k, p=p, method=method, test=test, dfs=dfs,
         QM=QM, QMp=QMp, s2w=s2,
+        yi=yi, vi=vi, X=X, vb=vb,
     )
+
+
+@dataclass
+class BLUPResult:
+    """Per-study best linear unbiased predictors (empirical-Bayes shrinkage).
+
+    Mirrors ``metafor::blup.rma.uni``: element-wise ``pred``, its ``se``, and the
+    prediction interval (``pi_lb``/``pi_ub``)."""
+
+    pred: np.ndarray
+    se: np.ndarray
+    pi_lb: np.ndarray
+    pi_ub: np.ndarray
+
+
+def blup(res: RMAResult, level: float = 95.0):
+    """Best linear unbiased predictors — ``metafor::blup.rma.uni`` parity.
+
+    For each study *i*, shrinks the observed effect toward its fitted value by the
+    reliability ``li = τ²/(τ²+v_i)`` (Robinson 1991; Viechtbauer 2010)::
+
+        pred_i  = li·y_i + (1−li)·X_i β̂
+                = X_i β̂ + li·(y_i − X_i β̂)              # equivalent form
+        var_i   = li·v_i + (1−li)²·X_i Var(β̂) X_iᵀ      (li·v_i when li==1)
+        se_i    = √var_i
+        pi_i    = pred_i ± crit·se_i
+
+    ``crit`` is the standard-normal quantile (or a t-quantile with ``k−p`` df when
+    the fit used the Knapp-Hartung adjustment), exactly as in metafor.
+
+    Parameters
+    ----------
+    res   : RMAResult   a fit from :func:`rma` (must retain ``yi``/``vi``/``X``/``vb``).
+    level : float       confidence level for the prediction interval (percent).
+    """
+    if res.yi is None or res.vi is None or res.X is None or res.vb is None:
+        raise ValueError("blup needs an rma() fit that retained yi/vi/X/vb")
+    yi = np.asarray(res.yi, float).ravel()
+    vi = np.asarray(res.vi, float).ravel()
+    X = np.asarray(res.X, float)
+    vb = np.asarray(res.vb, float)
+    beta = np.asarray(res.beta, float).ravel()
+    tau2 = float(res.tau2)
+
+    Xbeta = X @ beta                         # fitted (marginal) value per study
+    # reliability / shrinkage weight; li==1 when tau2 is infinite (not used here)
+    li = tau2 / (tau2 + vi)
+    pred = li * yi + (1.0 - li) * Xbeta
+
+    # Var(pred_i): within-study shrinkage term + uncertainty in the mean.
+    # metafor special-cases li==1 (τ²=∞) to li·v_i; here τ² is finite so the
+    # general branch applies, but we keep the guard for exact parity.
+    quad = np.einsum("ij,jk,ik->i", X, vb, X)   # X_i Var(β̂) X_iᵀ per study
+    vpred = np.where(li == 1.0, li * vi, li * vi + (1.0 - li) ** 2 * quad)
+    se = np.sqrt(vpred)
+
+    a = (1 - level / 100.0) / 2.0
+    if res.test == "knha":
+        crit = stats.t.ppf(1 - a, res.dfs)
+    else:
+        crit = stats.norm.ppf(1 - a)
+    pi_lb = pred - crit * se
+    pi_ub = pred + crit * se
+    return BLUPResult(pred=pred, se=se, pi_lb=pi_lb, pi_ub=pi_ub)

@@ -15,6 +15,10 @@ se    <- sqrt(diag(vcov))
 sens  <- plogis(coef[1])
 fpr   <- plogis(coef[2])
 
+# --- HSROC coefficients + area under the Rutter-Gatsonis SROC curve ---
+hs   <- mada:::calc_hsroc_coef(fit)
+auc  <- AUC(fit)                              # named vector: AUC, pAUC
+
 out <- list(
   data = list(TP = AuditC$TP, FN = AuditC$FN, FP = AuditC$FP, TN = AuditC$TN),
   reitsma = list(
@@ -26,6 +30,17 @@ out <- list(
     false_pos_rate  = as.numeric(fpr),
     logLik          = as.numeric(fit$logLik),
     par             = as.numeric(fit$par)
+  ),
+  hsroc = list(
+    Theta       = as.numeric(hs$Theta),
+    Lambda      = as.numeric(hs$Lambda),
+    beta        = as.numeric(hs$beta),
+    sigma2theta = as.numeric(hs$sigma2theta),
+    sigma2alpha = as.numeric(hs$sigma2alpha)
+  ),
+  auc = list(
+    AUC  = as.numeric(auc["AUC"]),
+    pAUC = as.numeric(auc["pAUC"])
   )
 )
 

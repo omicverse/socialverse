@@ -47,6 +47,31 @@ out$overall <- list(
   PRI   = as.numeric(ov$PRI),
   covS  = as.numeric(ov$covS))
 
+# --- calibrate: fuzzy direct (3-anchor logistic) on a canonical numeric vector ---
+calx <- c(1,2,3,4,5,6,7,8,9,10)
+calth <- c(3, 5.5, 8)   # exclusion, crossover, inclusion anchors
+calfs <- calibrate(calx, type="fuzzy", method="direct",
+                   thresholds=calth, logistic=TRUE, idm=0.95)
+# crisp calibration (findInterval) on the same vector with the same cut-points
+calcrisp <- calibrate(calx, type="crisp", thresholds=calth)
+out$calibrate <- list(
+  x = calx,
+  thresholds = calth,
+  idm = 0.95,
+  fuzzy = as.numeric(calfs),
+  crisp = as.integer(calcrisp))
+
+# --- superSubset: necessity superset search on LF ---
+ss <- superSubset(LF, outcome="SURV", incl.cut=0.9, cov.cut=0.6)
+ssic <- ss$incl.cov
+out$superSubset <- list(
+  incl.cut = 0.9,
+  cov.cut  = 0.6,
+  terms = rownames(ssic),
+  inclN = as.numeric(ssic$inclN),
+  RoN   = as.numeric(ssic$RoN),
+  covN  = as.numeric(ssic$covN))
+
 write(toJSON(out, auto_unbox=TRUE, digits=15, pretty=TRUE), "pyqca/tests/reference.json")
 cat("QCA", as.character(packageVersion("QCA")), "-> reference.json (terms:",
     paste(terms, collapse=" + "), ")\n")

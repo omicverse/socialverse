@@ -5,7 +5,19 @@ from .pymatchit import (
     smd,
     matchit,
     MatchItResult,
+    get_w_from_ps,
+    mahalanobis_dist,
+    balance_table,
 )
 
-__all__ = ["glm_logit_ps", "nearest_match", "smd", "matchit", "MatchItResult"]
+__all__ = [
+    "glm_logit_ps",
+    "nearest_match",
+    "smd",
+    "matchit",
+    "MatchItResult",
+    "get_w_from_ps",
+    "mahalanobis_dist",
+    "balance_table",
+]
 __matchit_reference_version__ = "4.7.2"

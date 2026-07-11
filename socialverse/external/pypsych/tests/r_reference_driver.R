@@ -54,6 +54,37 @@ out$omega <- list(
   psych_omega_tot  = as.numeric(suppressWarnings(
     omega(X, nfactors = 1, plot = FALSE))$omega.tot))  # reference-only (psych pipeline)
 
+# --- ICC: intraclass correlations on a fixed subjects x raters matrix ---
+# Canonical Shrout & Fleiss (1979) style 6 subjects x 4 raters fixture.
+ratings <- matrix(c(9,2,5,8, 6,1,3,2, 8,4,6,8,
+                    7,1,2,6, 10,5,6,9, 6,2,4,7),
+                  ncol = 4, byrow = TRUE)
+storage.mode(ratings) <- "double"
+ic <- suppressWarnings(ICC(ratings, lmer = FALSE))
+icr <- ic$results
+out$icc <- list(
+  ratings = unname(ratings),
+  n = nrow(ratings), k = ncol(ratings),
+  type  = as.character(icr[, "type"]),
+  ICC   = as.numeric(icr[, "ICC"]),
+  F     = as.numeric(icr[, "F"]),
+  df1   = as.numeric(icr[, "df1"]),
+  df2   = as.numeric(icr[, "df2"]),
+  p     = as.numeric(icr[, "p"]),
+  lower = as.numeric(icr[, "lower bound"]),
+  upper = as.numeric(icr[, "upper bound"]),
+  MSW   = as.numeric(ic$MSW))
+
+# --- corr.test: correlation matrix + pairwise n + raw p on a fixed matrix ---
+# Use the same 5-item complete-case fixture (A1..A5) so inputs are already dumped.
+ct <- suppressWarnings(corr.test(X, adjust = "none", ci = FALSE))
+out$corr_test <- list(
+  r = unname(ct$r),                    # p x p correlation matrix
+  n = as.numeric(ct$n),                # constant here (complete cases)
+  t = unname(ct$t),                    # p x p Hotelling t
+  p = unname(ct$p),                    # p x p RAW two-sided p (adjust="none")
+  se = unname(ct$se))                  # p x p standard errors
+
 write(toJSON(out, auto_unbox = TRUE, digits = 15), "pypsych/tests/reference.json")
 cat("psych", as.character(packageVersion("psych")),
     "-> reference.json (raw_alpha=", round(out$alpha$raw_alpha, 6),

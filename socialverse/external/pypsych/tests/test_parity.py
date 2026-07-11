@@ -24,7 +24,7 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
-from pypsych import cronbach_alpha, fa_pa, omega_total  # noqa: E402
+from pypsych import cronbach_alpha, fa_pa, omega_total, ICC, corr_test  # noqa: E402
 
 REF = json.loads((HERE / "reference.json").read_text())
 TOL = 1e-6
@@ -91,6 +91,46 @@ def test_omega_keyreversed_definition():
     # After the SAME key reversal, gate our omega_total exactly (1e-6) vs the driver.
     om = omega_total(_corr_keyrev(), nfactors=1)
     _c("omega.keyrev", om, REF["omega"]["omega_tot_keyrev"])
+
+
+def test_ICC_point_estimates():
+    # Gate the six ICC point estimates + F / df / p to 1e-6 (class-1) against
+    # psych::ICC(lmer=FALSE) on the fixed 6x4 ratings fixture.
+    ic = REF["icc"]
+    r = ICC(np.asarray(ic["ratings"], float))
+    assert r["type"] == ic["type"]
+    _c("icc.ICC", r["ICC"], ic["ICC"])
+    _c("icc.F", r["F"], ic["F"])
+    _c("icc.df1", r["df1"], ic["df1"])
+    _c("icc.df2", r["df2"], ic["df2"])
+    _c("icc.p", r["p"], ic["p"])
+    _c("icc.MSW", r["MSW"], ic["MSW"])
+
+
+def test_ICC_confidence_bounds():
+    # ICC CIs are deterministic closed forms (qf/Satterthwaite df); gate to 1e-6.
+    ic = REF["icc"]
+    r = ICC(np.asarray(ic["ratings"], float))
+    _c("icc.lower", r["lower"], ic["lower"])
+    _c("icc.upper", r["upper"], ic["upper"])
+
+
+def test_corr_test_r_and_p():
+    # Gate corr.test correlation matrix + RAW two-sided p (adjust="none") + t + se
+    # to 1e-6 against psych::corr.test on the same 5-item complete-case fixture.
+    ct = REF["corr_test"]
+    r = corr_test(_items())
+    assert r["n"] == int(ct["n"])
+    _c("corr.r", r["r"], np.asarray(ct["r"], float))
+    _c("corr.p", r["p"], np.asarray(ct["p"], float))
+    _c("corr.se", r["se"], np.asarray(ct["se"], float))
+    # t has +Inf on the diagonal in both (r=1 -> t=Inf); gate the finite entries
+    # and confirm both mark the same diagonal as +Inf.
+    gt = np.asarray(r["t"], float)
+    et = np.asarray(ct["t"], float)          # "Inf" strings coerce to +inf
+    assert np.array_equal(np.isinf(gt), np.isinf(et))
+    fin = np.isfinite(et)
+    _c("corr.t", gt[fin], et[fin])
 
 
 def test_omega_close_to_psych_reference():

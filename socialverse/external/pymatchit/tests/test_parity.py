@@ -23,7 +23,12 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
-from pymatchit import matchit  # noqa: E402
+from pymatchit import (  # noqa: E402
+    matchit,
+    get_w_from_ps,
+    mahalanobis_dist,
+    balance_table,
+)
 
 REF = json.loads((HERE / "reference.json").read_text())
 TOL = 1e-6
@@ -108,3 +113,77 @@ def test_pairs_match_and_all_disagreements_are_exact_ties():
             )
 
     assert n_exact >= 177, f"only {n_exact}/185 pairs reproduced exactly"
+
+
+# ---------------------------------------------------------------------------
+# WeightIt::get_w_from_ps parity (ATE / ATT / ATC)
+# ---------------------------------------------------------------------------
+def test_get_w_from_ps_ate():
+    d = REF["data"]
+    ps = np.asarray(REF["distance"], float)
+    treat = np.asarray(d["treat"], int)
+    _c("get_w_from_ps.ATE", get_w_from_ps(ps, treat, "ATE"),
+       REF["get_w_from_ps"]["ate"])
+
+
+def test_get_w_from_ps_att():
+    d = REF["data"]
+    ps = np.asarray(REF["distance"], float)
+    treat = np.asarray(d["treat"], int)
+    _c("get_w_from_ps.ATT", get_w_from_ps(ps, treat, "ATT"),
+       REF["get_w_from_ps"]["att"])
+
+
+def test_get_w_from_ps_atc():
+    d = REF["data"]
+    ps = np.asarray(REF["distance"], float)
+    treat = np.asarray(d["treat"], int)
+    _c("get_w_from_ps.ATC", get_w_from_ps(ps, treat, "ATC"),
+       REF["get_w_from_ps"]["atc"])
+
+
+# ---------------------------------------------------------------------------
+# MatchIt::mahalanobis_dist parity (n1 x n0 pairwise distances)
+# ---------------------------------------------------------------------------
+def test_mahalanobis_dist():
+    d = REF["data"]
+    X = np.column_stack([d["age"], d["educ"], d["re74"], d["re75"]])
+    treat = np.asarray(d["treat"], int)
+    D = mahalanobis_dist(X, treat)
+    m = REF["mahalanobis"]
+    D_ref = np.asarray(m["flat"], float).reshape(m["n1"], m["n0"])
+    assert D.shape == D_ref.shape, f"{D.shape} vs {D_ref.shape}"
+    _c("mahalanobis_dist", D.ravel(), D_ref.ravel())
+
+
+# ---------------------------------------------------------------------------
+# MatchIt summary() balance table: SMD + Var.Ratio + eCDF (mean & max)
+# ---------------------------------------------------------------------------
+def _balance_inputs():
+    """Reconstruct the (distance + covariates) matrix R's summary() reports on."""
+    d = REF["data"]
+    ps = np.asarray(REF["distance"], float)
+    X = np.column_stack([ps, d["age"], d["educ"], d["re74"], d["re75"]])
+    treat = np.asarray(d["treat"], int)
+    return X, treat
+
+
+def test_balance_table_before():
+    X, treat = _balance_inputs()
+    bt = balance_table(X, treat, weights=None, covariates=REF["balance_table"]["vars"])
+    ref = REF["balance_table"]["before"]
+    _c("bal.before.smd", bt["std_mean_diff"], ref["std_mean_diff"])
+    _c("bal.before.var_ratio", bt["var_ratio"], ref["var_ratio"])
+    _c("bal.before.ecdf_mean", bt["ecdf_mean"], ref["ecdf_mean"])
+    _c("bal.before.ecdf_max", bt["ecdf_max"], ref["ecdf_max"])
+
+
+def test_balance_table_after():
+    X, treat = _balance_inputs()
+    w = np.asarray(REF["balance_table"]["match_weights"], float)
+    bt = balance_table(X, treat, weights=w, covariates=REF["balance_table"]["vars"])
+    ref = REF["balance_table"]["after"]
+    _c("bal.after.smd", bt["std_mean_diff"], ref["std_mean_diff"])
+    _c("bal.after.var_ratio", bt["var_ratio"], ref["var_ratio"])
+    _c("bal.after.ecdf_mean", bt["ecdf_mean"], ref["ecdf_mean"])
+    _c("bal.after.ecdf_max", bt["ecdf_max"], ref["ecdf_max"])

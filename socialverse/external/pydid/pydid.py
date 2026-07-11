@@ -84,13 +84,22 @@ def att_gt(data, yname, tname, idname, gname,
 
     Parameters mirror ``did::att_gt``.  ``data`` is a mapping of column-name ->
     sequence (e.g. columns of a DataFrame, or a dict of lists).  Supported
-    configuration: ``control_group='nevertreated'``, ``est_method='reg'``,
-    no covariates, panel data.
+    configuration: ``control_group in {'nevertreated', 'notyettreated'}``,
+    ``est_method='reg'``, no covariates, panel data.
+
+    With ``control_group='notyettreated'`` the comparison group for a given
+    (g, t) cell is the never-treated units PLUS the *not-yet-treated* units --
+    those first treated strictly after ``time_threshold = tlist[max(t, pret)]``
+    (plus ``anticipation``) and not equal to the current group.  This mirrors
+    ``did:::compute.att_gt``'s ``.C`` construction:
+
+        .C = (g == 0) | ((g > time_threshold) & (g != current_g))
 
     Returns an :class:`ATTgtResult`.
     """
-    if control_group != "nevertreated":
-        raise NotImplementedError("only control_group='nevertreated' is ported")
+    if control_group not in ("nevertreated", "notyettreated"):
+        raise NotImplementedError(
+            "only control_group in {'nevertreated','notyettreated'} is ported")
     if est_method != "reg":
         raise NotImplementedError("only est_method='reg' (no covariates) is ported")
     if anticipation != 0:
@@ -127,6 +136,7 @@ def att_gt(data, yname, tname, idname, gname,
 
     tfac = 1  # base_period != 'universal'
     tlist_length = nT - 1
+    nevertreated = control_group == "nevertreated"
 
     groups, times, atts = [], [], []
     for gi in range(len(glist)):
@@ -136,8 +146,9 @@ def att_gt(data, yname, tname, idname, gname,
         pret_g = idx_g[-1] if len(idx_g) else None
 
         G_full = (gvar_unit == current_g).astype(float)
-        C_full = (gvar_unit == 0).astype(float)
-        kept = np.where((G_full == 1) | (C_full == 1))[0]
+        if nevertreated:
+            C_full = (gvar_unit == 0).astype(float)
+            kept = np.where((G_full == 1) | (C_full == 1))[0]
 
         for t in range(tlist_length):          # t is 0-based, maps to R's 1:tlist.length
             pret = t
@@ -146,6 +157,16 @@ def att_gt(data, yname, tname, idname, gname,
             if pret is None:
                 # no pre-treatment period for this group -> drop remaining
                 break
+
+            if not nevertreated:
+                # not-yet-treated controls: never-treated OR first treated
+                # strictly after time_threshold = tlist[max(t, pret) + tfac].
+                time_threshold = tlist[max(t, pret) + tfac] + anticipation
+                C_full = (
+                    (gvar_unit == 0)
+                    | ((gvar_unit > time_threshold) & (gvar_unit != current_g))
+                ).astype(float)
+                kept = np.where((G_full == 1) | (C_full == 1))[0]
 
             Ypost = Y[kept, t + tfac]
             Ypre = Y[kept, pret]
@@ -179,9 +200,18 @@ class AGGTEResult:
 def aggte(res: ATTgtResult, type="simple", max_e=np.inf, min_e=-np.inf, na_rm=False):
     """Aggregate group-time ATTs (``did::aggte``).
 
-    Supports ``type='simple'`` and ``type='dynamic'`` (event study).  ``pg`` is
-    taken from the :class:`ATTgtResult`.  ``na_rm`` drops NA ATT(g,t) cells
-    before aggregating.
+    Supports:
+
+      * ``type='simple'``   -- pg-weighted mean of post-treatment ATT(g,t).
+      * ``type='dynamic'``  -- event-study: one ATT per event time ``e=t-g``.
+      * ``type='group'``    -- one ATT per treatment cohort (unweighted mean of
+        that cohort's post-treatment cells), overall weighted by cohort size.
+      * ``type='calendar'`` -- one ATT per calendar period ``t`` (pg-weighted
+        over cohorts already treated by ``t``), overall the plain mean over
+        periods.
+
+    ``pg`` is taken from the :class:`ATTgtResult`.  ``na_rm`` drops NA ATT(g,t)
+    cells before aggregating.
     """
     group = res.group.copy()
     t = res.t.copy()
@@ -217,5 +247,36 @@ def aggte(res: ATTgtResult, type="simple", max_e=np.inf, min_e=-np.inf, na_rm=Fa
         epos = eseq >= 0
         overall = float(np.mean(att_egt[epos]))
         return AGGTEResult("dynamic", overall, egt=eseq, att_egt=att_egt)
+
+    if type == "group":
+        # one ATT per cohort g: unweighted mean over that cohort's post cells
+        # within [g, g+max_e]; overall weighted by cohort size pgg.
+        glist_here = np.sort(np.unique(group))
+        att_g = []
+        for g in glist_here:
+            whichg = np.where((group == g) & (g <= t) & (t <= (g + max_e)))[0]
+            att_g.append(np.mean(att[whichg]))
+        att_g = np.array(att_g)
+        pgg = np.array([pg_lookup[float(g)] for g in glist_here])
+        overall = float(np.sum(att_g * pgg) / np.sum(pgg))
+        return AGGTEResult("group", overall, egt=glist_here, att_egt=att_g)
+
+    if type == "calendar":
+        # one ATT per calendar period t >= min(group), pg-weighted over cohorts
+        # already treated by t; overall the plain mean over periods.
+        minG = np.min(group)
+        tlist_here = np.sort(np.unique(t))
+        cal_tlist = tlist_here[tlist_here >= minG]
+        # keep only periods with a post-treatment cell
+        cal_tlist = np.array(
+            [t1 for t1 in cal_tlist if np.any((t == t1) & (group <= t))])
+        att_t = []
+        for t1 in cal_tlist:
+            whicht = np.where((t == t1) & (group <= t))[0]
+            pgt = pg[whicht] / np.sum(pg[whicht])
+            att_t.append(np.sum(pgt * att[whicht]))
+        att_t = np.array(att_t)
+        overall = float(np.mean(att_t))
+        return AGGTEResult("calendar", overall, egt=cal_tlist, att_egt=att_t)
 
     raise NotImplementedError(f"aggregation type '{type}' not ported")

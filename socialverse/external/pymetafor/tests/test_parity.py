@@ -2,7 +2,7 @@ import json, pathlib, sys
 import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))          # external/ on path
-from pymetafor import rma
+from pymetafor import rma, blup
 
 REF = json.loads((HERE / "reference.json").read_text())
 FX = REF["fixture"]
@@ -56,3 +56,11 @@ def test_se_tau2_reml(): _close("REML.se_tau2", rma(YI,VI,method="REML").se_tau2
 def test_predict_reml():
     pr = rma(YI,VI,method="REML").predict()
     _close("PI.lb", pr["pi_lb"], REF["pred_reml"]["pi.lb"]); _close("PI.ub", pr["pi_ub"], REF["pred_reml"]["pi.ub"])
+
+def test_blup_reml():
+    """BLUP empirical-Bayes shrinkage per study, deterministic → all 1e-6."""
+    b = blup(rma(YI, VI, method="REML")); ref = REF["blup_reml"]
+    _close("BLUP.pred", b.pred, ref["pred"])
+    _close("BLUP.se",   b.se,   ref["se"])
+    _close("BLUP.pi.lb", b.pi_lb, ref["pi.lb"])
+    _close("BLUP.pi.ub", b.pi_ub, ref["pi.ub"])
