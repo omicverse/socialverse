@@ -54,6 +54,18 @@ def test_pointbiserial_equal_groups():
     assert float(s.models["meta_effects"]["yi"].iloc[0]) == pytest.approx(2 * 0.3 / np.sqrt(1 - 0.09), rel=1e-9)
 
 
+def test_es_pomp_rescales_to_0_100():
+    df = pd.DataFrame({"study": ["A", "B"], "mean": [4.0, 3.0], "sd": [1.2, 1.0], "n": [100, 80]})
+    s = _src(df)
+    sv.pp.es_pomp(s, mean="mean", sd="sd", n="n", min_val=1, max_val=7, study="study")
+    eff = s.models["meta_effects"]
+    # (4-1)/(7-1)*100 = 50 ; (3-1)/6*100 = 33.33
+    assert eff["yi"].iloc[0] == pytest.approx(50.0)
+    assert eff["yi"].iloc[1] == pytest.approx(100 * 2 / 6, abs=1e-6)
+    # vi = (sd/(max-min)*100)^2 / n
+    assert eff["vi"].iloc[0] == pytest.approx((1.2 / 6 * 100) ** 2 / 100, rel=1e-9)
+
+
 def test_ma_aggregate_collapses_to_one_per_study():
     yi = np.array([0.2, 0.4, 0.1, 0.5, 0.3]); vi = np.array([0.04, 0.03, 0.05, 0.02, 0.04])
     s = _eff(yi, vi, study=["A", "A", "B", "B", "B"])
