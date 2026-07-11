@@ -3,7 +3,7 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
-from pyqca import truth_table, minimize
+from pyqca import truth_table, minimize, calibrate, superSubset
 
 REF = json.loads((HERE / "reference.json").read_text())
 TOL = 1e-6
@@ -76,3 +76,36 @@ def test_solution_overall_pof():
     _c("sol.inclS", m["overall"]["inclS"], ref["inclS"])
     _c("sol.PRI", m["overall"]["PRI"], ref["PRI"])
     _c("sol.covS", m["overall"]["covS"], ref["covS"])
+
+
+# ---- calibrate: fuzzy direct logistic + crisp findInterval ----
+def test_calibrate_fuzzy_direct():
+    ref = REF["calibrate"]
+    got = calibrate(ref["x"], type="fuzzy", method="direct",
+                    thresholds=ref["thresholds"], logistic=True, idm=ref["idm"])
+    _c("calibrate.fuzzy", got, ref["fuzzy"])
+
+
+def test_calibrate_crisp():
+    ref = REF["calibrate"]
+    got = calibrate(ref["x"], type="crisp", thresholds=ref["thresholds"])
+    _c("calibrate.crisp", got, ref["crisp"], tol=0)
+
+
+# ---- superSubset: necessity superset search (terms + inclN/RoN/covN) ----
+def test_supersubset_terms():
+    data, conds, _ = _data()
+    ref = REF["superSubset"]
+    ss = superSubset(data, outcome="SURV", conditions=conds,
+                     incl_cut=ref["incl.cut"], cov_cut=ref["cov.cut"])
+    assert ss["terms"] == ref["terms"], (ss["terms"], ref["terms"])
+
+
+def test_supersubset_incl_cov():
+    data, conds, _ = _data()
+    ref = REF["superSubset"]
+    ss = superSubset(data, outcome="SURV", conditions=conds,
+                     incl_cut=ref["incl.cut"], cov_cut=ref["cov.cut"])
+    _c("ss.inclN", ss["incl_cov"]["inclN"], ref["inclN"])
+    _c("ss.RoN", ss["incl_cov"]["RoN"], ref["RoN"])
+    _c("ss.covN", ss["incl_cov"]["covN"], ref["covN"])

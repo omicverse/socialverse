@@ -357,6 +357,66 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
     max_smd_before = float(np.max(np.abs(list(smd_before.values())))) if smd_before else None
     max_smd_after = float(np.max(np.abs(list(smd_after.values())))) if smd_after else None
 
+    # -- port-backed extra balance columns (Var. Ratio + eCDF mean/max) --------
+    # Faithful MatchIt::summary(standardize=TRUE) columns via the parity-gated
+    # ``pymatchit.balance_table``. Adds diagnostics; never touches SMD keys.
+    balance_ext: dict[str, Any] = {}
+    ps_weights_summary: dict[str, Any] | None = None
+    try:
+        from ..external.pymatchit import balance_table, get_w_from_ps
+
+        # adjustment weights aligned to the full ``work`` frame (treated first).
+        if method == "ipw":
+            w_full = w  # ATT weights already computed above
+        else:
+            # NN 1:1 (with replacement): treated weight 1, each control weighted
+            # by how many times it was used as a match.
+            w_full = np.zeros(len(t), float)
+            t_positions = np.flatnonzero(treated_mask)
+            c_positions = np.flatnonzero(control_mask)
+            w_full[t_positions[mt]] = 1.0
+            for cj in mc:
+                w_full[c_positions[cj]] += 1.0
+
+        bt_before = balance_table(X, t, weights=None, covariates=covariates)
+        bt_after = balance_table(X, t, weights=w_full, covariates=covariates)
+
+        def _col(bt: dict, key: str) -> dict[str, float]:
+            return {c: (float(v) if np.isfinite(v) else None)
+                    for c, v in zip(bt["vars"], np.asarray(bt[key], float))}
+
+        balance_ext = {
+            "var_ratio_before": _col(bt_before, "var_ratio"),
+            "var_ratio_after": _col(bt_after, "var_ratio"),
+            "ecdf_mean_before": _col(bt_before, "ecdf_mean"),
+            "ecdf_mean_after": _col(bt_after, "ecdf_mean"),
+            "ecdf_max_before": _col(bt_before, "ecdf_max"),
+            "ecdf_max_after": _col(bt_after, "ecdf_max"),
+        }
+
+        # ps balancing-weight summary from get_w_from_ps (ATT estimand, the
+        # focal quantity psm targets).
+        w_att = np.asarray(get_w_from_ps(p, t, estimand="ATT", treated=1), float)
+        w_att_c = w_att[control_mask]
+        n_eff_c = (float(np.sum(w_att_c) ** 2 / np.sum(w_att_c ** 2))
+                   if np.sum(w_att_c ** 2) > 0 else 0.0)
+        ps_weights_summary = {
+            "estimand": "ATT",
+            "min": float(np.min(w_att)),
+            "max": float(np.max(w_att)),
+            "mean": float(np.mean(w_att)),
+            "sum": float(np.sum(w_att)),
+            "control_min": float(np.min(w_att_c)) if w_att_c.size else None,
+            "control_max": float(np.max(w_att_c)) if w_att_c.size else None,
+            "control_mean": float(np.mean(w_att_c)) if w_att_c.size else None,
+            "n_eff_control": n_eff_c,
+            "note": ("ATT 平衡权重(处理组=1,对照=p/(1-p));"
+                     "n_eff_control 为对照有效样本量,极端权重会显著压低它"),
+        }
+    except Exception as _exc:  # pragma: no cover - graceful degradation
+        balance_ext = {"note_ext": f"扩展平衡统计不可用(port 调用失败:{_exc})"}
+        ps_weights_summary = None
+
     state.write("models", "psm", {
         "att": float(att),
         "se": (float(se) if se is not None else None),
@@ -372,6 +432,7 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
         "note": ("ATT = 处理组结果 − 匹配/加权对照组结果;"
                  "naive_diff(未调整处理−对照差)有混杂偏误"),
         "backend": "pymatchit",
+        "ps_weights_summary": ps_weights_summary,
     })
     state.write("diagnostics", "balance", {
         "smd_before": smd_before,
@@ -381,6 +442,7 @@ def psm(state: StudyState, **kwargs: Any) -> StudyState:
         "note": (balance_note
                  + ";|SMD|<0.1 通常视为平衡良好,匹配/加权后应显著小于匹配前"),
         "backend": "pymatchit",
+        **balance_ext,
     })
     return state
 

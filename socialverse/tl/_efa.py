@@ -258,10 +258,24 @@ def efa(state: StudyState, **kwargs: Any) -> StudyState:
         bart_chi2 = bart_p = None
 
     # -- loadings + explained variance ----------------------------------------
-    fa_lib = _try_import("factor_analyzer")
     loadings = None
     estimator = None
-    if fa_lib is not None:
+    # R psych::fa(fm="pa") principal-axis extraction via the parity-gated
+    # pypsych port. sv's default stays principal-COMPONENT; pass method="pa"
+    # (or fm="pa") to get R-exact principal-AXIS factoring instead.
+    if str(kwargs.get("method") or kwargs.get("fm") or "").lower() in (
+            "pa", "principal-axis", "principal_axis", "paf"):
+        try:
+            from ..external.pypsych import fa_pa as _fa_pa_port
+            res = _fa_pa_port(R, n_factors)
+            loadings = np.asarray(res["loadings"], float).reshape(p, n_factors)
+            if rotation == "varimax" and n_factors > 1:
+                loadings = _varimax(loadings)
+            estimator = "pypsych.fa_pa (R psych::fa fm='pa', principal-axis)"
+        except Exception:
+            loadings = None
+    fa_lib = _try_import("factor_analyzer")
+    if loadings is None and fa_lib is not None:
         try:
             FA = fa_lib.FactorAnalyzer(
                 n_factors=n_factors, rotation=rotation, method="principal"

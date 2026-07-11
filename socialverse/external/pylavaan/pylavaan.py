@@ -181,7 +181,97 @@ def _fit_ml(model: _CFAModel, S: np.ndarray):
     res2 = optimize.minimize(objective, res.x, method="BFGS",
                              options=dict(maxiter=5000, gtol=1e-12))
     best = res2 if res2.fun < res.fun else res
-    return best.x, best.fun
+    # Newton polish on the analytic gradient to drive ||grad F_ML|| -> ~machine
+    # eps.  L-BFGS/BFGS leave a residual gradient (~1e-7) that, while harmless
+    # for the fit indices, is amplified by N in the score-test modification
+    # indices; a few Fisher-scoring steps recover lavaan's exact ML optimum.
+    x = _newton_polish(model, S, best.x)
+    return x, objective(x)
+
+
+def _fml_gradient(model: _CFAModel, S, theta):
+    """Analytic gradient of F_ML = tr(S Sig^-1) - log|S Sig^-1| - p.
+
+    dF/dtheta_k = -tr( Sig^-1 (S - Sig) Sig^-1 dSig/dtheta_k ).
+    """
+    p = model.p
+    Sig = model.sigma(theta)
+    Sinv = np.linalg.inv(Sig)
+    M = Sinv @ (S - Sig) @ Sinv          # symmetric
+    g = np.zeros(model.npar)
+    for k, dS in enumerate(_dsigma_columns(model, theta)):
+        g[k] = -np.sum(M * dS)
+    return g
+
+
+def _newton_polish(model: _CFAModel, S, theta, iters=50, tol=1e-13):
+    """Fisher-scoring refinement of the ML estimates from a good start."""
+    p = model.p
+    x = theta.astype(float).copy()
+    for _ in range(iters):
+        g = _fml_gradient(model, S, x)
+        if np.linalg.norm(g) < tol:
+            break
+        # Fisher information for F_ML (= 2 x per-obs expected info / ... ),
+        # step = H^-1 g with H the Gauss-Newton (expected) Hessian.
+        H = _fml_expected_hessian(model, x)
+        try:
+            step = np.linalg.solve(H, g)
+        except np.linalg.LinAlgError:
+            break
+        x_new = x - step
+        # keep variances positive; if a full step invalidates PD-ness, damp it
+        f_ok = False
+        alpha = 1.0
+        for _ in range(30):
+            cand = x - alpha * step
+            try:
+                Sig = model.sigma(cand)
+                np.linalg.cholesky(Sig)
+                f_ok = True
+                break
+            except np.linalg.LinAlgError:
+                alpha *= 0.5
+        if not f_ok:
+            break
+        x = cand
+    return x
+
+
+def _fml_expected_hessian(model: _CFAModel, theta):
+    """Gauss-Newton (expected) Hessian of F_ML: 2 * Delta' (Sig^-1 (x) Sig^-1)
+    Delta contracted per column, i.e. H_kl = 2 tr(Sig^-1 dS_k Sig^-1 dS_l)."""
+    Sig = model.sigma(theta)
+    Sinv = np.linalg.inv(Sig)
+    cols = list(_dsigma_columns(model, theta))
+    n = len(cols)
+    # precompute Sinv dS_k Sinv
+    A = [Sinv @ dS @ Sinv for dS in cols]
+    H = np.zeros((n, n))
+    for k in range(n):
+        for l in range(k, n):
+            v = np.sum(A[k] * cols[l])
+            H[k, l] = H[l, k] = v
+    return H
+
+
+def _dsigma_columns(model: _CFAModel, theta):
+    """Yield analytic dSigma/dtheta_k (p x p) for each free parameter, in the
+    model's parameter layout order [free_load, free_theta, psi_var, psi_cov]."""
+    p, mm = model.p, model.m
+    Lam, Th, Psi = model.matrices(theta)
+    for (r, c) in model.free_load:
+        E = np.zeros((p, mm)); E[r, c] = 1.0
+        yield E @ Psi @ Lam.T + Lam @ Psi @ E.T
+    for i in model.free_theta:
+        M = np.zeros((p, p)); M[i, i] = 1.0
+        yield M
+    for a in model.free_psi_var:
+        E = np.zeros((mm, mm)); E[a, a] = 1.0
+        yield Lam @ E @ Lam.T
+    for (a, b) in model.free_psi_cov:
+        E = np.zeros((mm, mm)); E[a, b] = 1.0; E[b, a] = 1.0
+        yield Lam @ E @ Lam.T
 
 
 # --------------------------------------------------------------------------
@@ -274,6 +364,84 @@ def _baseline_fml(S):
     return _fml(S, Sig, p)
 
 
+def _zeroin(f, lo, hi, tol=None, maxit=1000):
+    """Faithful port of R's C `zeroin2` (Brent's method) used by uniroot().
+
+    Reproduces R's root finder bit-for-bit so that the noncentrality-parameter
+    inversions behind rmsea.ci.lower/upper match lavaan exactly (lavaan calls
+    stats::uniroot with its default tol = .Machine$double.eps^0.25)."""
+    if tol is None:
+        tol = np.finfo(float).eps ** 0.25
+    a, b = lo, hi
+    fa, fb = f(a), f(b)
+    c, fc = a, fa
+    EPS = np.finfo(float).eps
+    for _ in range(maxit):
+        prev_step = b - a
+        if abs(fc) < abs(fb):
+            a, b, c = b, c, b
+            fa, fb, fc = fb, fc, fb
+        tol_act = 2.0 * EPS * abs(b) + tol / 2.0
+        new_step = (c - b) / 2.0
+        if abs(new_step) <= tol_act or fb == 0.0:
+            return b
+        if abs(prev_step) >= tol_act and abs(fa) > abs(fb):
+            cb = c - b
+            if a == c:
+                t1 = fb / fa
+                p = cb * t1
+                q = 1.0 - t1
+            else:
+                q = fa / fc
+                t1 = fb / fc
+                t2 = fb / fa
+                p = t2 * (cb * q * (q - t1) - (b - a) * (t1 - 1.0))
+                q = (q - 1.0) * (t1 - 1.0) * (t2 - 1.0)
+            if p > 0.0:
+                q = -q
+            else:
+                p = -p
+            if p < 0.75 * cb * q - abs(tol_act * q) / 2.0 and p < abs(prev_step * q / 2.0):
+                new_step = p / q
+        if abs(new_step) < tol_act:
+            new_step = tol_act if new_step > 0.0 else -tol_act
+        a, fa = b, fb
+        b += new_step
+        fb = f(b)
+        if (fb > 0.0) == (fc > 0.0):
+            c, fc = a, fa
+    return b
+
+
+def _rmsea_ci(chisq, df, N, level=0.90):
+    """lavaan's rmsea CI via noncentral chi-square ncp inversion (R uniroot)."""
+    from scipy.stats import ncx2
+    if df < 1 or not np.isfinite(chisq):
+        return float("nan"), float("nan")
+    upper_perc = 1.0 - (1.0 - level) / 2.0     # 0.95
+    lower_perc = (1.0 - level) / 2.0           # 0.05
+
+    def lower_lambda(lam):
+        return ncx2.cdf(chisq, df, lam) - upper_perc
+
+    def upper_lambda(lam):
+        return ncx2.cdf(chisq, df, lam) - lower_perc
+
+    if lower_lambda(0.0) < 0.0:
+        lo = 0.0
+    else:
+        lam_l = _zeroin(lower_lambda, 0.0, chisq)
+        lo = np.sqrt(lam_l / (N * df))
+
+    N_rmsea = max(N, chisq * 4.0)
+    if upper_lambda(N_rmsea) > 0.0 or upper_lambda(0.0) < 0.0:
+        hi = 0.0
+    else:
+        lam_u = _zeroin(upper_lambda, 0.0, N_rmsea)
+        hi = np.sqrt(lam_u / (N * df))
+    return lo, hi
+
+
 def _fit_measures(S, Sig, N, npar):
     p = S.shape[0]
     fml = _fml(S, Sig, p)
@@ -297,6 +465,14 @@ def _fit_measures(S, Sig, N, npar):
 
     # RMSEA (per-group N divisor; single group)
     rmsea = np.sqrt(max(chisq - df, 0.0) / (df * N)) if df > 0 else 0.0
+    rmsea_lo, rmsea_hi = _rmsea_ci(chisq, df, N)
+    # H0: rmsea <= 0.05  -> pvalue = P(chisq' > obs | ncp0), ncp0 = 0.05^2*df*N
+    from scipy.stats import ncx2, chi2
+    ncp0 = (0.05 ** 2) * df * N
+    rmsea_pvalue = 1.0 - ncx2.cdf(chisq, df, ncp0) if df > 0 else float("nan")
+
+    # chisq p-value (central)
+    pvalue = 1.0 - chi2.cdf(chisq, df) if df > 0 else float("nan")
 
     # SRMR (Bentler correlation-based; RMS of lower-tri incl diag of
     # standardized covariance residuals)
@@ -308,9 +484,131 @@ def _fit_measures(S, Sig, N, npar):
     tril = np.tril_indices(p)
     srmr = np.sqrt(np.sum(E[tril] ** 2) / (p * (p + 1) / 2))
 
-    return dict(chisq=chisq, df=int(df), cfi=cfi, tli=tli, rmsea=rmsea,
-                srmr=srmr, fmin=0.5 * fml, baseline_chisq=chisq_b,
-                baseline_df=int(df_b))
+    # log-likelihood of the fitted model (multivariate-normal, no mean struct):
+    #   logl = -N p/2 log(2 pi) - N/2 log|Sig| - N/2 tr(Sig^-1 S)
+    Sinv = np.linalg.inv(Sig)
+    sign, logdet_sig = np.linalg.slogdet(Sig)
+    logl = -N * p / 2.0 * np.log(2 * np.pi) - N / 2.0 * logdet_sig \
+        - N / 2.0 * np.trace(Sinv @ S)
+    # unrestricted (saturated) logl uses Sig = S
+    signs, logdet_s = np.linalg.slogdet(S)
+    unrestricted_logl = -N * p / 2.0 * np.log(2 * np.pi) - N / 2.0 * logdet_s \
+        - N * p / 2.0
+    aic = -2.0 * logl + 2.0 * npar
+    bic = -2.0 * logl + npar * np.log(N)
+    # sample-size-adjusted BIC (Sclove): N* = (N + 2) / 24
+    n_star = (N + 2.0) / 24.0
+    bic2 = -2.0 * logl + npar * np.log(n_star)
+
+    # NFI = (chisq_b - chisq) / chisq_b
+    nfi = (chisq_b - chisq) / chisq_b if chisq_b > 0 else float("nan")
+
+    # GFI = 1 - tr((W - I)^2) / tr(W^2), W = Sig^-1 S
+    W = Sinv @ S
+    WI = W - np.eye(p)
+    gfi = 1.0 - np.trace(WI @ WI) / np.trace(W @ W)
+    # AGFI = 1 - (p(p+1) / (2 df)) (1 - GFI)
+    agfi = 1.0 - (p * (p + 1) / (2.0 * df)) * (1.0 - gfi) if df > 0 else float("nan")
+
+    return dict(chisq=chisq, df=int(df), pvalue=pvalue, cfi=cfi, tli=tli,
+                rmsea=rmsea, rmsea_ci_lower=rmsea_lo, rmsea_ci_upper=rmsea_hi,
+                rmsea_pvalue=rmsea_pvalue, srmr=srmr, fmin=0.5 * fml,
+                baseline_chisq=chisq_b, baseline_df=int(df_b),
+                logl=logl, unrestricted_logl=unrestricted_logl,
+                npar=int(npar), aic=aic, bic=bic, bic2=bic2,
+                nfi=nfi, gfi=gfi, agfi=agfi)
+
+
+# --------------------------------------------------------------------------
+# modification indices (univariate score / Lagrange-multiplier test + EPC)
+# --------------------------------------------------------------------------
+def _vech_order(p):
+    """Column-major lower-triangle index order used by the duplication matrix."""
+    return [(i, j) for j in range(p) for i in range(j, p)]
+
+
+def _dsigma_vech(model, theta, order):
+    """Analytic d vech(Sigma)/d theta for the model's free parameters, columns
+    ordered per the model layout, rows in the given vech `order`."""
+    cols = []
+    for dS in _dsigma_columns(model, theta):
+        cols.append(np.array([dS[i, j] for (i, j) in order]))
+    return np.array(cols).T if cols else np.zeros((len(order), 0))
+
+
+def _modification_indices(model, theta, S, N):
+    """lavaan modindices(): univariate score-test MI + EPC for every fixed
+    parameter (all cross-loadings not already in the model + all residual
+    covariances), using the expected information matrix.
+
+    Returns a list of dicts {lhs, op, rhs, mi, epc} in factor/indicator natural
+    order (loadings then residual covariances), matching lavaan's row layout.
+    """
+    p, mm = model.p, model.m
+    Sig = model.sigma(theta)
+    Sinv = np.linalg.inv(Sig)
+    order = _vech_order(p)
+    D = _duplication(p)
+    W = D.T @ np.kron(Sinv, Sinv) @ D          # q x q, per-obs vech info weight
+
+    # model-parameter columns of d vech(Sigma)/d theta
+    Delta_model = _dsigma_vech(model, theta, order)
+
+    # candidate "extra" (currently-fixed) parameters, in lavaan's order:
+    #   cross-loadings f =~ indicator for every (factor, indicator) not present,
+    #   then residual covariances x_i ~~ x_j for i < j.
+    extra_meta = []
+    extra_cols = []
+    existing = set(model.fixed_load) | set(model.free_load)
+    Lam, _, Psi = model.matrices(theta)
+    for c, f in enumerate(model.factor_names):
+        for r in range(p):
+            if (r, c) in existing:
+                continue
+            # dSigma / dLam[r,c] = E Psi Lam' + Lam Psi E'
+            E = np.zeros((p, mm)); E[r, c] = 1.0
+            dS = E @ Psi @ Lam.T + Lam @ Psi @ E.T
+            extra_cols.append(np.array([dS[i, j] for (i, j) in order]))
+            extra_meta.append((f, "=~", model.obs_names[r]))
+    for i in range(p):
+        for j in range(i + 1, p):
+            M = np.zeros((p, p)); M[i, j] = 1.0; M[j, i] = 1.0
+            extra_cols.append(np.array([M[a, b] for (a, b) in order]))
+            extra_meta.append((model.obs_names[i], "~~", model.obs_names[j]))
+    Delta_extra = np.array(extra_cols).T
+
+    # full (per-obs) expected information over [model | extra]
+    Delta_all = np.hstack([Delta_model, Delta_extra])
+    Info = 0.5 * (Delta_all.T @ W @ Delta_all)
+    nmod = Delta_model.shape[1]
+    nex = Delta_extra.shape[1]
+    midx = np.arange(nmod)
+    eidx = np.arange(nmod, nmod + nex)
+    I11 = Info[np.ix_(eidx, eidx)]
+    I12 = Info[np.ix_(eidx, midx)]
+    I21 = Info[np.ix_(midx, eidx)]
+    I22 = Info[np.ix_(midx, midx)]
+    I22inv = np.linalg.inv(I22)
+    V = I11 - I12 @ I22inv @ I21
+    Vdiag = np.diag(V).copy()
+    Vdiag[Vdiag < np.finfo(float).eps ** (1.0 / 3.0)] = np.nan
+
+    # per-obs score (gradient of logl) for the extra parameters:
+    #   g_k = 1/2 * (dvech Sigma_k)' D'(Sig^-1 (x) Sig^-1) vec(S - Sigma)
+    gvec = D.T @ np.kron(Sinv, Sinv) @ (S - Sig).flatten(order="F")
+    score = 0.5 * (Delta_extra.T @ gvec)
+
+    mi = N * (score * score) / Vdiag
+    # epc = mi / d,  d = -N * (lavaan's sign-flipped score) = N * score  ->
+    # epc = N score^2 / Vdiag / (N score) = score / Vdiag
+    epc = score / Vdiag
+
+    rows = []
+    for k in range(nex):
+        lhs, op, rhs = extra_meta[k]
+        rows.append(dict(lhs=lhs, op=op, rhs=rhs,
+                         mi=float(mi[k]), epc=float(epc[k])))
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -397,6 +695,16 @@ class CFAResult:
     def fit_measures(self):
         return _fit_measures(self.S, self.Sigma, self.N, self.model.npar)
 
+    def modification_indices(self, sort=True, minimum_value=0.0):
+        """Univariate score-test modification indices + EPC for all fixed
+        parameters, mirroring lavaan::modindices()."""
+        rows = _modification_indices(self.model, self.theta, self.S, self.N)
+        if minimum_value > 0.0:
+            rows = [r for r in rows if not (r["mi"] < minimum_value)]
+        if sort:
+            rows = sorted(rows, key=lambda r: (-(r["mi"] if r["mi"] == r["mi"] else -np.inf)))
+        return rows
+
 
 def cfa(model: str, data, meanstructure=False):
     """Fit a confirmatory factor analysis by ML, mirroring lavaan::cfa().
@@ -437,3 +745,20 @@ def cfa(model: str, data, meanstructure=False):
     m = _CFAModel(factors, obs)
     theta, fmin = _fit_ml(m, S)
     return CFAResult(m, theta, S, N)
+
+
+# --------------------------------------------------------------------------
+# R-style free functions taking a fitted result (mirror fitMeasures/modindices)
+# --------------------------------------------------------------------------
+def fit_measures(fitted_cfa):
+    """Full fit-index battery for a fitted CFA, mirroring lavaan::fitMeasures().
+
+    Returns a dict keyed like lavaan's names (dots replaced by underscores),
+    e.g. ``rmsea_ci_lower``, ``bic2``, ``logl``, ``gfi``.
+    """
+    return fitted_cfa.fit_measures()
+
+
+def modification_indices(fitted_cfa, sort=True, minimum_value=0.0):
+    """Univariate modification indices + EPC, mirroring lavaan::modindices()."""
+    return fitted_cfa.modification_indices(sort=sort, minimum_value=minimum_value)

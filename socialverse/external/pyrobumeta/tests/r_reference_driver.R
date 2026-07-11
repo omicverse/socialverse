@@ -3,7 +3,7 @@
 # both with Tipton CR2 small-sample correction + Satterthwaite df.
 # Dumps the fixture INPUT columns AND the robu() outputs (b, SE, df, CI, prob, tau.sq)
 # so Python reads exactly the same inputs.
-suppressMessages({library(robumeta); library(jsonlite)})
+suppressMessages({library(robumeta); library(clubSandwich); library(jsonlite)})
 out <- list()
 
 # ---- CORR model: corrdat, rho=0.8, small=TRUE ----
@@ -41,6 +41,30 @@ out$hier <- list(
   CI.L = as.numeric(rt2$CI.L), CI.U = as.numeric(rt2$CI.U),
   tau.sq = as.numeric(mh$mod_info$tau.sq), omega.sq = as.numeric(mh$mod_info$omega.sq),
   N = mh$N, M = mh$M, p = mh$p)
+
+# ---- clubSandwich::impute_covariance_matrix on corrdat, r = 0.7 ----
+# Block-diagonal V from marginal variances (corrdat$var) + assumed within-study r.
+# Emit the per-cluster blocks (sorted-cluster order) so Python matches exactly.
+r_imp <- 0.7
+V_list <- impute_covariance_matrix(vi = corrdat$var, cluster = corrdat$studyid,
+                                   r = r_imp, return_list = TRUE)
+# each block -> row-major nested list; also emit input vi/cluster + cluster sizes
+out$impute_cov <- list(
+  vi = corrdat$var, cluster = corrdat$studyid, r = r_imp,
+  n_clusters = length(V_list),
+  block_sizes = as.numeric(sapply(V_list, nrow)),
+  blocks = lapply(V_list, function(b) as.numeric(t(b))))  # row-major flatten
+
+# ---- clubSandwich::coef_test(mc, vcov="CR2") on the corrdat robu fit ----
+# Per-coefficient robust t-test with Tipton (2015) Satterthwaite df.
+ct <- coef_test(mc, vcov = "CR2")
+out$coef_test_corr <- list(
+  Coef = as.character(ct$Coef),
+  beta = as.numeric(ct$beta),
+  SE = as.numeric(ct$SE),
+  tstat = as.numeric(ct$tstat),
+  df = as.numeric(ct$df_Satt),
+  p_val = as.numeric(ct$p_Satt))
 
 write(toJSON(out, auto_unbox = TRUE, digits = 15, pretty = TRUE),
       "pyrobumeta/tests/reference.json")

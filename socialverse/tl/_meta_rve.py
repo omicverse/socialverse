@@ -281,6 +281,50 @@ def robu(state: StudyState, **kwargs: Any) -> StudyState:
             out["I2"] = float(port_res["I2"])
         if "omega_sq" in port_res:
             out["omega_sq"] = float(port_res["omega_sq"])
+
+        # ---- Tipton (2015) CR2 coef_test: per-coef t / Satterthwaite df / p ---
+        # 委托 clubSandwich 端口 coef_test(fit, vcov="CR2");失败时静默跳过,
+        # 不破坏既有 coefs / _VR 契约。
+        try:
+            from ..external.pyrobumeta import coef_test as _coef_test_port
+            ct = _coef_test_port(port_res, vcov="CR2")
+            beta_ct = np.asarray(ct["beta"], float)
+            se_ct = np.asarray(ct["SE"], float)
+            tstat_ct = np.asarray(ct["tstat"], float)
+            df_ct = np.asarray(ct["df"], float)
+            pval_ct = np.asarray(ct["p_val"], float)
+            out["coef_test_cr2"] = {
+                name: {
+                    "estimate": float(beta_ct[i]), "se": float(se_ct[i]),
+                    "tstat": float(tstat_ct[i]), "df": float(df_ct[i]),
+                    "pval": float(pval_ct[i]),
+                }
+                for i, name in enumerate(Xcols)
+            }
+            out["coef_test_cr2_note"] = "Tipton (2015) CR2 + Satterthwaite df (clubSandwich coef_test)"
+        except Exception as exc:  # pragma: no cover - defensive
+            out["coef_test_cr2_note"] = f"coef_test unavailable: {exc}"
+
+    # ---- optional user-supplied within-cluster correlation -> V matrix --------
+    # 当用户给出 within-cluster 相关系数(kwarg ``impute_r`` / ``within_corr``),
+    # 用 clubSandwich impute_covariance_matrix 构造块对角 V 矩阵并汇总其结构信息。
+    impute_r = kwargs.get("impute_r", kwargs.get("within_corr"))
+    if impute_r is not None:
+        try:
+            from ..external.pyrobumeta import impute_covariance_matrix as _impute_V
+            v_blocks = _impute_V(v, cluster, float(impute_r), return_list=True)
+            block_sizes = [int(b.shape[0]) for b in v_blocks]
+            out["impute_covariance"] = {
+                "within_corr": float(impute_r),
+                "n_blocks": len(v_blocks),
+                "block_sizes": block_sizes,
+                "total_dim": int(sum(block_sizes)),
+                "V_blocks": [b.tolist() for b in v_blocks],
+                "note": "块对角 V:对角=vi,非对角=r·sqrt(vi·vj)(clubSandwich impute_covariance_matrix)",
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            out["impute_covariance"] = {"note": f"impute_covariance_matrix unavailable: {exc}"}
+
     state.write("models", "meta_rve", out)
     return state
 

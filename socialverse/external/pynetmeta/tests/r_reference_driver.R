@@ -32,9 +32,32 @@ out <- list(
   tau    = as.numeric(net$tau)
 )
 
+# --- netmeasures: per-comparison network measures (Krahn design model) ---
+# proportion of direct evidence, mean path length, minimal parallelism.
+# Gate BOTH the common/fixed (random=FALSE, tau=0, fully deterministic) and
+# the random-effects (random=TRUE, tau = fitted DL tau) variants.
+nmF <- netmeasures(net, random = FALSE)
+nmR <- netmeasures(net, random = TRUE)
+out$netmeasures <- list(
+  labels = names(nmF$proportion),  # comparison labels (rownames of H)
+  fixed = list(
+    proportion   = as.numeric(nmF$proportion),
+    meanpath     = as.numeric(nmF$meanpath),
+    minpar       = as.numeric(nmF$minpar),
+    minpar_study = as.numeric(nmF$minpar.study)
+  ),
+  random = list(
+    proportion   = as.numeric(nmR$proportion),
+    meanpath     = as.numeric(nmR$meanpath),
+    minpar       = as.numeric(nmR$minpar),
+    minpar_study = as.numeric(nmR$minpar.study)
+  )
+)
+
 write(toJSON(out, auto_unbox = TRUE, digits = 15, pretty = TRUE),
       "pynetmeta/tests/reference.json")
 cat("netmeta", as.character(packageVersion("netmeta")),
     "-> reference.json (Q=", round(net$Q, 6),
     ", tau2=", round(net$tau2, 6),
-    ", metf-vs-plac fixed TE=", round(net$TE.fixed["metf", "plac"], 6), ")\n")
+    ", metf-vs-plac fixed TE=", round(net$TE.fixed["metf", "plac"], 6),
+    ", netmeasures ncomp=", length(nmF$proportion), ")\n")

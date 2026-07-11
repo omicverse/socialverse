@@ -17,6 +17,15 @@ Faithful port of the deterministic combinatorial-exact core of R package ``QCA``
   * ``pof``          — parameters of fit for a set of terms: term-level inclusion
     (consistency) ``inclS``, ``PRI``, raw coverage ``covS`` and unique coverage
     ``covU``, plus the solution-level ``inclS``/``PRI``/``covS``.
+  * ``calibrate``    — direct/indirect calibration of raw numeric data to
+    crisp/fuzzy set-membership scores. The fuzzy direct method uses the 3-anchor
+    logistic function of R QCA (exclusion / crossover / inclusion thresholds and
+    the inclusion degree-of-membership ``idm``); crisp calibration is
+    ``findInterval`` on sorted thresholds.
+  * ``superSubset``  — necessity superset search: enumerates single conditions
+    and their conjunctions (fuzzy ``min``) plus minimal disjunctions (fuzzy
+    ``max``) whose necessity inclusion ``inclN`` and coverage ``covN`` clear the
+    ``incl.cut`` / ``cov.cut`` cut-offs, reporting ``inclN`` / ``RoN`` / ``covN``.
 
 Fuzzy operators follow QCA exactly: AND = elementwise ``min``, OR = ``max``,
 negation of condition ``x`` = ``1 - x``.
@@ -28,7 +37,8 @@ from __future__ import annotations
 from itertools import combinations
 import numpy as np
 
-__all__ = ["truth_table", "minimize", "pof", "TruthTable"]
+__all__ = ["truth_table", "minimize", "pof", "TruthTable",
+           "calibrate", "superSubset"]
 
 
 # ---------------------------------------------------------------------------
@@ -363,3 +373,230 @@ def _parse_term(s, conditions):
         name = lit[1:] if neg else lit
         imp[idx[name]] = 0 if neg else 1
     return tuple(imp)
+
+
+# ---------------------------------------------------------------------------
+# calibration (R QCA ``calibrate``)
+# ---------------------------------------------------------------------------
+def calibrate(x, type="fuzzy", method="direct", thresholds=None,
+              logistic=True, idm=0.95):
+    """Calibrate raw numeric data into crisp or fuzzy set-membership scores.
+
+    Faithful port of R QCA ``calibrate`` for the two deterministic paths gated
+    here:
+
+    * ``type="crisp"`` — return ``findInterval(x, sort(thresholds))``: the count
+      of thresholds each value equals or exceeds (integer set values ``0..k``).
+    * ``type="fuzzy", method="direct", logistic=True`` — 3-anchor logistic
+      calibration. ``thresholds`` are the exclusion, crossover and inclusion
+      anchors ``(thEX, thCR, thIN)``. Values below the crossover use the
+      exclusion arm, values at/above use the inclusion arm::
+
+          y  = (x < thCR) + 1                    # 1 above/at crossover, 2 below
+          fs = 1 / (1 + exp( sign * (x - thCR) * log(idm/(1-idm))
+                             / (anchor - thCR) ))
+
+      with ``sign = -1`` at/above crossover and ``+1`` below, and ``anchor`` the
+      inclusion threshold above the crossover, the exclusion threshold below.
+      If ``thEX > thIN`` (decreasing set) the two arms swap and ``fs`` is
+      complemented, exactly as in R.
+
+    * ``type="fuzzy", method="indirect"`` — bin ``x`` by the thresholds and
+      return the within-bin mean of ``x`` rescaled to ``[0,1]`` is *not* what R
+      does; the indirect method is documented as out-of-scope for this port.
+
+    Parameters
+    ----------
+    x : 1-D sequence of numeric values
+    type : {"fuzzy", "crisp"}
+    method : {"direct"}  (only the direct method is supported)
+    thresholds : sequence of 3 anchors (fuzzy direct) or k cut-points (crisp)
+    logistic : bool, use the logistic direct method (only ``True`` supported)
+    idm : float in (0.5, 1), inclusion degree of membership at the inclusion
+          anchor (default 0.95)
+
+    Returns
+    -------
+    numpy.ndarray of calibrated scores (fuzzy) or integer set values (crisp).
+    """
+    x = np.asarray(x, float)
+    if thresholds is None:
+        raise ValueError("Threshold value(s) not specified.")
+    th = np.asarray(thresholds, float)
+
+    if type == "crisp":
+        cuts = np.sort(th)
+        # findInterval: number of cut-points <= each x (right-open intervals)
+        return np.array([int(np.sum(cuts <= v)) for v in x], dtype=int)
+
+    if type != "fuzzy":
+        raise ValueError("Incorrect calibration type.")
+    if method != "direct":
+        raise NotImplementedError(
+            "pyqca.calibrate supports only method='direct' (the deterministic "
+            "logistic path); indirect/TFR are out-of-scope for the class-1 gate.")
+    if not logistic:
+        raise NotImplementedError(
+            "pyqca.calibrate supports only logistic=True (the 3-anchor logistic "
+            "direct method); the linear-interpolation path is out-of-scope.")
+    if th.size != 3:
+        raise ValueError(
+            "For fuzzy direct calibration, there should be 3 thresholds.")
+    if idm <= 0.5 or idm >= 1:
+        raise ValueError(
+            "The inclusion degree of membership has to be bigger than 0.5 and "
+            "less than 1.")
+
+    thEX, thCR, thIN = float(th[0]), float(th[1]), float(th[2])
+    decreasing = thEX > thIN
+    if decreasing:
+        thEX, thIN = thIN, thEX  # swap so thEX < thCR < thIN
+
+    # arm selector: y==1 at/above crossover (sign -1, anchor thIN),
+    #               y==2 below crossover     (sign +1, anchor thEX)
+    below = x < thCR
+    sign = np.where(below, 1.0, -1.0)
+    anchor = np.where(below, thEX, thIN)
+    fs = 1.0 / (1.0 + np.exp(sign * (x - thCR)
+                             * np.log(idm / (1.0 - idm)) / (anchor - thCR)))
+    if decreasing:
+        fs = 1.0 - fs
+    return fs
+
+
+# ---------------------------------------------------------------------------
+# necessity parameters of fit
+# ---------------------------------------------------------------------------
+def _inclN(x, y):
+    """Necessity inclusion (consistency): sum(min(x,y)) / sum(y)."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    denom = y.sum()
+    return float(np.minimum(x, y).sum() / denom) if denom > 0 else float("nan")
+
+
+def _covN(x, y):
+    """Necessity coverage: sum(min(x,y)) / sum(x)."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    denom = x.sum()
+    return float(np.minimum(x, y).sum() / denom) if denom > 0 else float("nan")
+
+
+def _RoN(x, y):
+    """Relevance of Necessity (Schneider & Wagemann):
+    sum(1 - x) / sum(1 - min(x, y))."""
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    denom = (1.0 - np.minimum(x, y)).sum()
+    return float((1.0 - x).sum() / denom) if denom > 0 else float("nan")
+
+
+# ---------------------------------------------------------------------------
+# superSubset — necessity superset search (R QCA ``superSubset``)
+# ---------------------------------------------------------------------------
+def superSubset(data, outcome, conditions=None, incl_cut=1.0, cov_cut=0.0,
+                ron_cut=0.0, depth=None):
+    """Necessity superset search (R QCA ``superSubset``, ``relation="necessity"``).
+
+    Enumerates two families of expressions over the conditions and keeps those
+    whose necessity inclusion ``inclN`` clears ``incl_cut`` and coverage
+    ``covN`` clears ``cov_cut`` (and ``RoN`` clears ``ron_cut``):
+
+    * **conjunctions** — products of positive-literal conditions (fuzzy ``min``),
+      *including* single conditions. Every passing conjunction is reported
+      (rendered with ``*``).
+    * **disjunctions** — sums of two or more conditions (fuzzy ``max``), reported
+      only when *minimal*: no proper subset expression already passes (rendered
+      with `` + ``).
+
+    The cut-offs are applied with R's ``.Machine$double.eps^0.5`` tolerance so a
+    value numerically equal to the cut still passes.
+
+    Parameters
+    ----------
+    data : mapping name -> 1-D sequence of fuzzy scores in [0,1]
+    outcome : str, key of the outcome in ``data``
+    conditions : list[str] or None (all keys except outcome)
+    incl_cut : float, necessity inclusion cut-off
+    cov_cut : float, necessity coverage cut-off
+    ron_cut : float, relevance-of-necessity cut-off (rows below are dropped)
+    depth : int or None, maximum number of conditions per expression
+
+    Returns
+    -------
+    dict with keys ``terms`` (list[str]) and ``incl_cov`` (dict of parallel
+    lists ``inclN`` / ``RoN`` / ``covN``), in R's report order (conjunctions by
+    ascending size then condition order, then minimal disjunctions).
+    """
+    if conditions is None:
+        conditions = [c for c in data.keys() if c != outcome]
+    conditions = list(conditions)
+    k = len(conditions)
+    if depth is None:
+        depth = k
+
+    X = {c: np.asarray(data[c], float) for c in conditions}
+    y = np.asarray(data[outcome], float)
+
+    # R subtracts sqrt(machine eps) from the cut-offs before comparing.
+    eps = np.sqrt(np.finfo(float).eps)
+    incl_thr = incl_cut - eps
+    cov_thr = (cov_cut - eps) if cov_cut > 0 else cov_cut
+
+    idx = {c: i for i, c in enumerate(conditions)}
+
+    def _passes_nec(mem):
+        return _inclN(mem, y) >= incl_thr and _covN(mem, y) >= cov_thr
+
+    # --- conjunctions (min), positive literals, sizes 1..depth ---
+    conj_terms, conj_rows = [], []
+    for size in range(1, depth + 1):
+        for combo in combinations(conditions, size):
+            mem = np.minimum.reduce([X[c] for c in combo])
+            if _passes_nec(mem):
+                conj_terms.append("*".join(combo))
+                conj_rows.append((_inclN(mem, y), _RoN(mem, y), _covN(mem, y)))
+
+    # --- disjunctions (max), sizes 2..depth, minimal only ---
+    def _disj_mem(combo):
+        return np.maximum.reduce([X[c] for c in combo])
+
+    def _disj_passes(combo):
+        return _passes_nec(_disj_mem(combo))
+
+    disj_terms, disj_rows = [], []
+    for size in range(2, depth + 1):
+        for combo in combinations(conditions, size):
+            if not _disj_passes(combo):
+                continue
+            # minimal: no proper subset (size >= 1) also passes as a disjunction /
+            # single condition
+            redundant = False
+            for sub_size in range(1, size):
+                for sub in combinations(combo, sub_size):
+                    sub_mem = (_disj_mem(sub) if sub_size > 1 else X[sub[0]])
+                    if _passes_nec(sub_mem):
+                        redundant = True
+                        break
+                if redundant:
+                    break
+            if redundant:
+                continue
+            mem = _disj_mem(combo)
+            disj_terms.append(" + ".join(combo))
+            disj_rows.append((_inclN(mem, y), _RoN(mem, y), _covN(mem, y)))
+
+    terms = conj_terms + disj_terms
+    rows = conj_rows + disj_rows
+
+    # drop rows failing the RoN cut-off (R applies this after the search)
+    keep = [i for i, (_, ron, _) in enumerate(rows) if ron >= ron_cut]
+    terms = [terms[i] for i in keep]
+    rows = [rows[i] for i in keep]
+
+    return {
+        "terms": terms,
+        "incl_cov": {
+            "inclN": [r[0] for r in rows],
+            "RoN": [r[1] for r in rows],
+            "covN": [r[2] for r in rows],
+        },
+    }

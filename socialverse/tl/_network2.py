@@ -37,7 +37,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["ergm", "saom"]
+__all__ = ["ergm", "network_statistics", "saom"]
 
 
 # --------------------------------------------------------------------- helpers
@@ -417,6 +417,115 @@ def ergm(state: StudyState, **kwargs: Any) -> StudyState:
         "note": "ERGM via MPLE:edges/mutual/transitive change statistics",
     })
     state.write("diagnostics", "gof", gof)
+    return state
+
+
+# ------------------------------------------------------ network_statistics helpers
+def _normalize_summary_terms(raw: Any) -> list[Any]:
+    """Coerce a user-supplied ``terms=`` spec into ``summary_formula`` term specs.
+
+    Accepts a single term or a sequence of terms; each element is either a bare
+    string (``"edges"`` / ``"mutual"`` / ``"triangle"``) or a ``(kind, arg)``
+    pair (e.g. ``("idegree", [0, 1, 2])``). Lists inside a term (a degree spec)
+    are preserved; only the *outer* container is treated as the term list.
+    """
+    if raw is None:
+        return ["edges", "mutual"]
+    # a lone bare-string term, or a single (kind, arg) tuple
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, tuple):
+        return [raw]
+    if isinstance(raw, (list,)):
+        return list(raw)
+    return [raw]
+
+
+# ------------------------------------------------------------ network_statistics
+@register(
+    name="network_statistics",
+    aliases=["network_stats", "网络统计量", "三元组普查"],
+    category="net",
+    tier="pro",
+    skill="(ERGM 充分统计量 + Holland-Leinhardt 三元组普查,Python 原生空白)",
+    languages=["Python"],
+    key_tools=["numpy", "networkx"],
+    description="有向网络的 ERGM 充分统计量(summary_formula)与 Holland-Leinhardt 16 型三元组普查(triad_census)",
+    requires={"sources": ["datasets"]},
+    produces={"models": ["network_stats"]},
+    prerequisites={"optional_functions": ["build_network"]},
+    auto_fix="escalate",
+)
+def network_statistics(state: StudyState, **kwargs: Any) -> StudyState:
+    """Report observed ERGM sufficient statistics and the directed triad census.
+
+    The directed network is read from ``edges=`` (or ``sources['datasets']``)
+    and turned into a 0/1 adjacency matrix. Two exact (non-estimated) summaries
+    are computed by delegating to the parity-gated ``pyergm`` port:
+
+    - :func:`~socialverse.external.pyergm.summary_formula` — the vector of
+      **observed sufficient statistics** ``g(y)`` for a requested ``terms`` set
+      (default ``["edges", "mutual"]``), reproducing R ``ergm``'s
+      ``summary(net ~ terms)``. Each term is either a bare string
+      (``"edges"``/``"mutual"``/``"triangle"``) or a ``(kind, arg)`` pair such as
+      ``("idegree", [0, 1, 2])`` or ``("nodematch", attr)``.
+    - :func:`~socialverse.external.pyergm.triad_census` — the Holland-Leinhardt
+      **16-type directed triad census** (``sna::triad.census``: 003, 012, …, 300).
+
+    Writes ``models['network_stats']`` (summary statistics keyed by ergm-style
+    label, plus the triad census keyed by MAN code). Never raises: with no usable
+    edge table — or if the port rejects the requested terms — it writes an
+    empty-but-valid record so a resolver can chain past it.
+    """
+    terms = _normalize_summary_terms(kwargs.get("terms"))
+    attr_name = kwargs.get("attr_name")
+
+    def _empty(note: str) -> StudyState:
+        state.write("models", "network_stats", {
+            "method": "observed sufficient statistics + directed triad census",
+            "terms": [t if isinstance(t, str) else list(t)[:1][0] for t in terms],
+            "summary": {}, "triad_census": {},
+            "n_nodes": 0, "n_edges": 0, "backend": None, "note": note,
+        })
+        return state
+
+    df = _edges_from(state, kwargs, "edges")
+    if df is None or df.empty:
+        return _empty("缺少边表(edges= 或 sources['datasets']),无法计算网络统计量")
+
+    A, nodes = _adjacency(df, kwargs)
+    n = A.shape[0]
+    if n < 3 or A.sum() == 0:
+        return _empty("网络过小或无边,无法计算三元组普查")
+
+    try:
+        from ..external.pyergm import (
+            TRIAD_CENSUS_LABELS,
+            summary_formula,
+            triad_census,
+        )
+
+        stats, labels = summary_formula(A, terms, directed=True, attr_name=attr_name)
+        census = triad_census(A)
+    except Exception as exc:  # noqa: BLE001 — graceful: never crash the resolver
+        return _empty(f"pyergm 端口未能计算网络统计量({type(exc).__name__}: {exc})")
+
+    summary = {lab: float(v) for lab, v in zip(labels, stats)}
+    triad = {lab: int(c) for lab, c in zip(TRIAD_CENSUS_LABELS, census)}
+
+    state.write("models", "network_stats", {
+        "method": "observed sufficient statistics (summary_formula) + "
+                  "Holland-Leinhardt directed triad census (triad_census)",
+        "backend": "pyergm",
+        "directed": True,
+        "terms": labels,
+        "summary": summary,
+        "triad_census": triad,
+        "n_triads": int(sum(triad.values())),
+        "n_nodes": int(n),
+        "n_edges": int(A.sum()),
+        "note": "充分统计量=精确计数(summary(net~terms));三元组普查=sna::triad.census 16 型 MAN 编码",
+    })
     return state
 
 

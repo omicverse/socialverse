@@ -31,7 +31,8 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["design_survey", "survey_estimate"]
+__all__ = ["design_survey", "survey_estimate",
+           "survey_by", "survey_ratio", "survey_ciprop"]
 
 
 # --------------------------------------------------------------------- helpers
@@ -98,6 +99,57 @@ def _z(p: float) -> float:
     r = q * q
     return float((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
                  (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1))
+
+
+def _resolve_dataset(state: StudyState, kwargs: dict) -> pd.DataFrame:
+    """Resolve the modelling frame like :func:`survey_estimate` does.
+
+    Accepts a ``data`` override, then ``state.sources['datasets']`` which may be a
+    DataFrame, a dict of frames, or any DataFrame-coercible mapping.
+    """
+    data = kwargs.get("data")
+    if data is None:
+        data = state.sources.get("datasets")
+    if isinstance(data, dict):
+        data = next(iter(data.values()), None)
+    if not isinstance(data, pd.DataFrame):
+        data = pd.DataFrame(data) if data is not None else pd.DataFrame()
+    return data
+
+
+def _design_from_state(state: StudyState, data: pd.DataFrame, used_cols: list):
+    """Build an ``external.pysurvey`` ``SurveyDesign`` from the ``design`` slots.
+
+    Reads ``design['weights'/'strata'|'stratum'/'psu'/'fpc']`` and slices grouping
+    ids from the ORIGINAL (un-coerced) frame by row index so string stratum/PSU
+    labels are preserved. Returns ``(design, weights_array, model_index)``.
+    """
+    from ..external.pysurvey import svydesign  # parity-gated port
+
+    weight_col = state.design.get("weights")
+    psu_col = state.design.get("psu")
+    stratum_col = state.design.get("strata") or state.design.get("stratum")
+    fpc_col = state.design.get("fpc")
+
+    keep = [c for c in used_cols if c and c in data.columns]
+    num = data[keep].apply(pd.to_numeric, errors="coerce") if keep else data.copy()
+    subset = [c for c in used_cols if c and c in num.columns]
+    num = num.dropna(axis=0, subset=subset) if subset else num
+    idx = num.index
+
+    if weight_col and weight_col in data.columns:
+        w = pd.to_numeric(data.loc[idx, weight_col], errors="coerce").fillna(0.0).clip(lower=0.0).to_numpy(float)
+    else:
+        w = np.ones(len(idx), dtype=float)
+
+    strata = data.loc[idx, stratum_col].to_numpy() if (stratum_col and stratum_col in data.columns) else None
+    psu = (data.loc[idx, psu_col].to_numpy()
+           if (psu_col and psu_col in data.columns and data.loc[idx, psu_col].notna().any()) else None)
+    fpc = (pd.to_numeric(data.loc[idx, fpc_col], errors="coerce").to_numpy(float)
+           if (fpc_col and fpc_col in data.columns) else None)
+
+    des = svydesign({}, weights=w, ids=psu, strata=strata, fpc=fpc)
+    return des, w, idx
 
 
 def _sample_size(effect_size: float, deff: float, alpha: float, power: float) -> int:
@@ -293,13 +345,14 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
     fitted = False
 
     backend = None
+    design_total = None      # design-based total of the outcome (svytotal)
     if n > len(predictors) + 1 and n > 1:
         # Design-based estimation via the parity-gated survey reconstruction
         # (external/pysurvey) — exact R-survey Taylor-linearization incl. strata
         # + FPC, superseding the statsmodels cluster-robust approximation which
         # ignored both. See external/pysurvey.
         try:
-            from ..external.pysurvey import svydesign, svyglm, svymean
+            from ..external.pysurvey import svydesign, svyglm, svymean, svytotal
             # Grouping ids (strata/PSU) are read from the ORIGINAL frame by row
             # index — model_df was numeric-coerced, which would turn string
             # stratum labels ("E"/"H"/"M") into NaN and collapse the variance.
@@ -319,6 +372,10 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
                 mr = svymean(y.to_numpy(float), des)
                 coef = {"const": mr["estimate"]}; se = {"const": mr["se"]}
                 ci = {"const": [mr["ci_lb"], mr["ci_ub"]]}
+            # design-based TOTAL of the outcome (svytotal) — a distinct estimand
+            # socialverse previously did not surface.
+            _dt = svytotal(y.to_numpy(float), des)
+            design_total = {"estimate": _dt["estimate"], "se": _dt["se"], "df": _dt["df"]}
             fitted = True
             backend = "pysurvey"
         except Exception:
@@ -349,6 +406,7 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
         "coef": coef,
         "se": se,
         "ci": ci,
+        "design_total": design_total,
         "n": n,
         "outcome": outcome,
         "exposure": exposure,
@@ -386,4 +444,206 @@ def survey_estimate(state: StudyState, **kwargs: Any) -> StudyState:
     state.write("models", "weighted_reg", weighted_reg)
     state.write("diagnostics", "sensitivity", sensitivity)
     state.write("artifacts", "tables", table)
+    return state
+
+
+# --------------------------------------------------------------------- svyby
+@register(
+    name="survey_by",
+    aliases=["分组加权估计", "survey_domain", "svyby"],
+    category="survey",
+    tier="plus",
+    skill="complex-survey-analysis",
+    languages=["Python"],
+    key_tools=["scipy", "numpy"],
+    description="复杂抽样分域(子总体)估计:按分组列计算 design-based 域均值/域总计(svyby),方差取自完整设计",
+    requires={"sources": ["datasets"], "design": ["weights"], "variables": ["outcome"]},
+    produces={"models": ["survey_by"], "artifacts": ["tables"]},
+    auto_fix="escalate",
+)
+def survey_by(state: StudyState, **kwargs: Any) -> StudyState:
+    """Design-based domain (subpopulation) means/totals per level of a group column.
+
+    Reads the outcome from ``variables['outcome']`` and the grouping column from
+    ``kwargs['by']`` / ``variables['group'|'by']``. Delegates to
+    :func:`external.pysurvey.svyby`, whose domain variance is taken over the *full*
+    design (strata/PSUs), so the SE differs from a naive subset ``svymean``.
+
+    Parameters (via ``kwargs``)
+    ---------------------------
+    data : DataFrame, optional — overrides ``state.sources['datasets']``.
+    outcome : str, optional — overrides ``state.variables['outcome']``.
+    by : str, optional — grouping column; defaults to ``variables['group'|'by']``.
+    stat : {"svymean", "svytotal"}, optional — domain statistic (default ``svymean``).
+    """
+    data = _resolve_dataset(state, kwargs)
+    outcome = kwargs.get("outcome", state.variables.get("outcome"))
+    by = kwargs.get("by", state.variables.get("group") or state.variables.get("by"))
+    stat = kwargs.get("stat", "svymean")
+
+    result: dict[str, Any] = {
+        "outcome": outcome, "by": by, "stat": stat, "backend": None,
+        "levels": [], "estimate": {}, "se": {}, "df": None, "n": 0,
+    }
+    table = pd.DataFrame(columns=["level", "estimate", "se"])
+
+    try:
+        if not outcome or outcome not in data.columns:
+            raise ValueError(f"outcome column {outcome!r} not found in dataset")
+        if not by or by not in data.columns:
+            raise ValueError(f"grouping column {by!r} not found in dataset")
+
+        from ..external.pysurvey import svyby
+
+        des, w, idx = _design_from_state(state, data, [outcome])
+        yv = pd.to_numeric(data.loc[idx, outcome], errors="coerce").to_numpy(float)
+        gv = data.loc[idx, by].to_numpy()
+        out = svyby(yv, gv, des, stat=stat)
+
+        levels = list(out["levels"])
+        ests = [float(v) for v in np.asarray(out["estimate"]).ravel()]
+        ses = [float(v) for v in np.asarray(out["se"]).ravel()]
+        result.update({
+            "backend": "pysurvey",
+            "levels": levels,
+            "estimate": {str(lv): e for lv, e in zip(levels, ests)},
+            "se": {str(lv): s for lv, s in zip(levels, ses)},
+            "df": int(out["df"]),
+            "n": int(len(idx)),
+        })
+        table = pd.DataFrame(
+            {"level": [str(lv) for lv in levels], "estimate": ests, "se": ses},
+            columns=["level", "estimate", "se"],
+        )
+    except Exception as exc:  # graceful degrade — never crash on missing input
+        result["error"] = f"survey_by 未能完成:{exc}"
+
+    state.write("models", "survey_by", result)
+    state.write("artifacts", "tables", table)
+    return state
+
+
+# --------------------------------------------------------------------- svyratio
+@register(
+    name="survey_ratio",
+    aliases=["加权比率", "survey_ratio_est", "svyratio"],
+    category="survey",
+    tier="plus",
+    skill="complex-survey-analysis",
+    languages=["Python"],
+    key_tools=["scipy", "numpy"],
+    description="复杂抽样比率估计:两列的 design-based 比率 R=Σw·num/Σw·den,Taylor 线性化 SE(svyratio)",
+    requires={"sources": ["datasets"], "design": ["weights"]},
+    produces={"models": ["survey_ratio"]},
+    auto_fix="escalate",
+)
+def survey_ratio(state: StudyState, **kwargs: Any) -> StudyState:
+    """Design-based ratio of two columns with Taylor-linearized SE.
+
+    Numerator/denominator columns come from ``kwargs['num'|'den']`` or, by default,
+    ``variables['outcome']`` (numerator) and ``variables['denominator'|'size']``.
+    Delegates to :func:`external.pysurvey.svyratio`.
+
+    Parameters (via ``kwargs``)
+    ---------------------------
+    data : DataFrame, optional — overrides ``state.sources['datasets']``.
+    num : str, optional — numerator column; defaults to ``variables['outcome']``.
+    den : str, optional — denominator column; defaults to
+        ``variables['denominator'|'size']``.
+    """
+    data = _resolve_dataset(state, kwargs)
+    num = kwargs.get("num", state.variables.get("outcome"))
+    den = kwargs.get("den", state.variables.get("denominator") or state.variables.get("size"))
+
+    result: dict[str, Any] = {
+        "num": num, "den": den, "backend": None,
+        "estimate": float("nan"), "se": float("nan"),
+        "ci": [float("nan"), float("nan")], "df": None, "n": 0,
+    }
+
+    try:
+        if not num or num not in data.columns:
+            raise ValueError(f"numerator column {num!r} not found in dataset")
+        if not den or den not in data.columns:
+            raise ValueError(f"denominator column {den!r} not found in dataset")
+
+        from ..external.pysurvey import svyratio
+
+        des, w, idx = _design_from_state(state, data, [num, den])
+        nv = pd.to_numeric(data.loc[idx, num], errors="coerce").to_numpy(float)
+        dv = pd.to_numeric(data.loc[idx, den], errors="coerce").to_numpy(float)
+        out = svyratio(nv, dv, des)
+        result.update({
+            "backend": "pysurvey",
+            "estimate": float(out["estimate"]),
+            "se": float(out["se"]),
+            "ci": [float(out["ci_lb"]), float(out["ci_ub"])],
+            "df": int(out["df"]),
+            "n": int(len(idx)),
+        })
+    except Exception as exc:  # graceful degrade — never crash on missing input
+        result["error"] = f"survey_ratio 未能完成:{exc}"
+
+    state.write("models", "survey_ratio", result)
+    return state
+
+
+# --------------------------------------------------------------------- svyciprop
+@register(
+    name="survey_ciprop",
+    aliases=["加权比例置信区间", "survey_prop_ci", "svyciprop"],
+    category="survey",
+    tier="plus",
+    skill="complex-survey-analysis",
+    languages=["Python"],
+    key_tools=["scipy", "numpy"],
+    description="复杂抽样比例置信区间:0/1 指标的 design-based 加权比例 + logit 法置信区间(svyciprop)",
+    requires={"sources": ["datasets"], "design": ["weights"], "variables": ["outcome"]},
+    produces={"models": ["survey_ciprop"]},
+    auto_fix="escalate",
+)
+def survey_ciprop(state: StudyState, **kwargs: Any) -> StudyState:
+    """Design-based proportion of a 0/1 indicator with a logit-method CI.
+
+    Reads the binary outcome from ``variables['outcome']`` (override via
+    ``kwargs['outcome']``) and delegates to :func:`external.pysurvey.svyciprop`,
+    which returns the weighted proportion, its variance/SE, and a logit-scale CI.
+
+    Parameters (via ``kwargs``)
+    ---------------------------
+    data : DataFrame, optional — overrides ``state.sources['datasets']``.
+    outcome : str, optional — 0/1 indicator column; defaults to
+        ``variables['outcome']``.
+    """
+    data = _resolve_dataset(state, kwargs)
+    outcome = kwargs.get("outcome", state.variables.get("outcome"))
+
+    result: dict[str, Any] = {
+        "outcome": outcome, "backend": None,
+        "estimate": float("nan"), "var": float("nan"), "se": float("nan"),
+        "ci": [float("nan"), float("nan")], "df": None, "n": 0,
+    }
+
+    try:
+        if not outcome or outcome not in data.columns:
+            raise ValueError(f"outcome column {outcome!r} not found in dataset")
+
+        from ..external.pysurvey import svyciprop
+
+        des, w, idx = _design_from_state(state, data, [outcome])
+        yv = pd.to_numeric(data.loc[idx, outcome], errors="coerce").to_numpy(float)
+        out = svyciprop(yv, des)
+        result.update({
+            "backend": "pysurvey",
+            "estimate": float(out["estimate"]),
+            "var": float(out["var"]),
+            "se": float(out["se"]),
+            "ci": [float(out["ci_lb"]), float(out["ci_ub"])],
+            "df": int(out["df"]),
+            "n": int(len(idx)),
+        })
+    except Exception as exc:  # graceful degrade — never crash on missing input
+        result["error"] = f"survey_ciprop 未能完成:{exc}"
+
+    state.write("models", "survey_ciprop", result)
     return state

@@ -3,7 +3,7 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
-from pymada import reitsma
+from pymada import reitsma, AUC, calc_hsroc_coef
 
 REF = json.loads((HERE / "reference.json").read_text())
 TOL = 1e-6
@@ -48,3 +48,22 @@ def test_pooled_sensitivity_specificity():
     r = _fit(); ref = REF["reitsma"]
     _c("sensitivity", r["sensitivity"], ref["sensitivity"])
     _c("false_pos_rate", r["false_pos_rate"], ref["false_pos_rate"])
+
+
+def test_hsroc_coefficients():
+    r = _fit(); ref = REF["hsroc"]
+    hs = calc_hsroc_coef(r)
+    for k in ("Theta", "Lambda", "beta", "sigma2theta", "sigma2alpha"):
+        _c(f"hsroc.{k}", hs[k], ref[k])
+
+
+def test_auc():
+    r = _fit(); ref = REF["auc"]
+    a = AUC(r)
+    _c("AUC", a["AUC"], ref["AUC"])
+
+
+def test_partial_auc():
+    r = _fit(); ref = REF["auc"]
+    a = AUC(r)
+    _c("pAUC", a["pAUC"], ref["pAUC"])

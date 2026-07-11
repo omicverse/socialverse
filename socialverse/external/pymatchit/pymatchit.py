@@ -23,7 +23,16 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["glm_logit_ps", "nearest_match", "smd", "matchit", "MatchItResult"]
+__all__ = [
+    "glm_logit_ps",
+    "nearest_match",
+    "smd",
+    "matchit",
+    "MatchItResult",
+    "get_w_from_ps",
+    "mahalanobis_dist",
+    "balance_table",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +229,252 @@ def matchit(X, treat, covariates=None):
                             else [f"x{j}" for j in range(X.shape[1])])
 
     return MatchItResult(coef, ps, pairs, weights, smd_before, smd_after, vars_)
+
+
+# ---------------------------------------------------------------------------
+# WeightIt::get_w_from_ps — propensity-score -> balancing weights
+# ---------------------------------------------------------------------------
+def get_w_from_ps(ps, treat, estimand="ATE", treated=1):
+    """Convert a binary propensity score to balancing weights (WeightIt).
+
+    Faithful port of ``WeightIt::get_w_from_ps(ps, treat, estimand)`` for a
+    **binary** treatment supplied as a length-n vector of P(treated).  R builds
+    the 2-column matrix ``ps_mat = [1-ps, ps]`` whose second column is the
+    *treated* level, then:
+
+      * ``ATE`` : ``w = 1 / ps_mat[i, treat_i]``  → treated ``1/ps``, control
+        ``1/(1-ps)``;
+      * ``ATT`` : focal = treated level; treated get weight 1, controls get
+        ``ps_mat[i, focal] / ps_mat[i, treat_i] = ps/(1-ps)``;
+      * ``ATC`` : focal = control level; controls get weight 1, treated get
+        ``(1-ps)/ps``.
+
+    Parameters
+    ----------
+    ps : (n,) propensity scores, P(treat == ``treated``).
+    treat : (n,) treatment indicator (values equal to ``treated`` mark treated).
+    estimand : one of ``"ATE"``, ``"ATT"``, ``"ATC"`` (case-insensitive).
+    treated : the value in ``treat`` denoting the treated level (default 1).
+
+    Returns
+    -------
+    w : (n,) balancing weights, matching WeightIt element-wise.
+    """
+    ps = np.asarray(ps, float)
+    treat = np.asarray(treat)
+    n = ps.shape[0]
+    est = str(estimand).upper()
+
+    # ps_mat columns: [P(control level), P(treated level)] = [1-ps, ps]
+    is_treated = treat == treated
+    w = np.ones(n, float)
+
+    if est == "ATE":
+        w[is_treated] = 1.0 / ps[is_treated]
+        w[~is_treated] = 1.0 / (1.0 - ps[~is_treated])
+    elif est == "ATT":
+        # focal = treated: treated weight 1, control ps/(1-ps)
+        w[is_treated] = 1.0
+        w[~is_treated] = ps[~is_treated] / (1.0 - ps[~is_treated])
+    elif est == "ATC":
+        # focal = control: control weight 1, treated (1-ps)/ps
+        w[~is_treated] = 1.0
+        w[is_treated] = (1.0 - ps[is_treated]) / ps[is_treated]
+    else:
+        raise ValueError(f"unsupported estimand {estimand!r} (ATE/ATT/ATC)")
+    return w
+
+
+# ---------------------------------------------------------------------------
+# MatchIt::mahalanobis_dist — pairwise (scaled) Mahalanobis distances
+# ---------------------------------------------------------------------------
+def mahalanobis_dist(X, treat):
+    """Pairwise Mahalanobis distances between treated and control units.
+
+    Faithful port of ``MatchIt:::mahalanobis_dist(formula, data)`` on the
+    ``treat``-supplied path used by ``matchit(distance="mahalanobis")``:
+
+      1. ``X <- scale(X)`` — standardize each column (center by mean, divide by
+         the sample SD, ``ddof=1``);
+      2. ``var <- pooled_cov(X, treat)`` — the within-group-centered covariance
+         with the binary small-sample correction ``* (n-1)/(n-2)``;
+      3. whiten ``X`` by ``inv(var)`` via a Cholesky factor
+         (``mahalanobize``: ``X @ chol(inv_var)`` reordered by the pivot), so
+         Euclidean distance in the whitened space equals Mahalanobis distance;
+      4. return the ``n1 x n0`` matrix of Euclidean distances between each
+         treated row and each control column (``eucdist_internal``).
+
+    Because the whitening only needs to satisfy
+    ``W W' = inv(var)`` for the squared distance
+    ``(x_t - x_c)' inv(var) (x_t - x_c)`` to be reproduced, any valid factor
+    gives the *same* pairwise distances; we use the symmetric matrix square
+    root of ``inv(var)`` for numerical stability.  Distances reproduce R
+    element-wise.
+
+    Parameters
+    ----------
+    X : (n, p) covariate matrix (no intercept).
+    treat : (n,) 0/1 treatment indicator.
+
+    Returns
+    -------
+    D : (n1, n0) array; ``D[i, j]`` is the Mahalanobis distance between the
+        i-th treated unit and the j-th control unit (in original row order).
+    """
+    X = np.asarray(X, float)
+    treat = np.asarray(treat, int)
+    n, p = X.shape
+
+    # scale(): center by column mean, divide by sample SD (ddof=1)
+    mu = X.mean(axis=0)
+    sd = X.std(axis=0, ddof=1)
+    Xs = (X - mu) / sd
+
+    # pooled within-group covariance (binary treat -> * (n-1)/(n-2))
+    Xc = Xs.copy()
+    ut = np.unique(treat)
+    for g in ut:
+        m = treat == g
+        Xc[m] -= Xc[m].mean(axis=0)
+    cov = np.cov(Xc, rowvar=False, ddof=1)  # cov() on already-centered X
+    cov = np.atleast_2d(cov) * (n - 1) / (n - len(ut))
+
+    inv_var = np.linalg.solve(cov, np.eye(p))
+    # symmetric square root of inv_var: whitening W with W W' = inv_var
+    evals, evecs = np.linalg.eigh(inv_var)
+    W = evecs @ np.diag(np.sqrt(np.clip(evals, 0, None))) @ evecs.T
+    Xw = Xs @ W
+
+    tr = np.flatnonzero(treat == 1)
+    co = np.flatnonzero(treat == 0)
+    diff = Xw[tr][:, None, :] - Xw[co][None, :, :]
+    return np.sqrt(np.sum(diff ** 2, axis=2))
+
+
+# ---------------------------------------------------------------------------
+# MatchIt summary() balance table: SMD + Var.Ratio + eCDF (mean & max)
+# ---------------------------------------------------------------------------
+def _wvar(x, w, bin_var=False):
+    """MatchIt wvar(): reliability-weighted variance (w renormalized to 1)."""
+    x = np.asarray(x, float)
+    w = np.asarray(w, float)
+    w = w / w.sum()
+    mx = np.sum(w * x)
+    if bin_var:
+        return mx * (1.0 - mx)
+    return np.sum(w * (x - mx) ** 2) / (1.0 - np.sum(w ** 2))
+
+
+def _ecdf_std(x, treat, w):
+    """MatchIt qqsum(standardize=TRUE): standardized eCDF (mean, max) diff.
+
+    Weights are renormalized to sum to 1 *within each treatment group*, the
+    treated group's contributions are negated, and the running cumulative sum
+    over sorted ``x`` is evaluated at each distinct-value boundary; ``meandiff``
+    is the mean of the absolute boundary heights, ``maxdiff`` the max.
+    """
+    x = np.asarray(x, float)
+    treat = np.asarray(treat)
+    w = np.asarray(w, float).copy()
+
+    # binary covariate: eCDF diff == |mean diff|
+    ux = np.unique(x)
+    if ux.size <= 2 and np.all((x == 0) | (x == 1)):
+        t1 = treat == treat[0]
+        d = abs(np.sum(w[t1] * x[t1]) / np.sum(w[t1])
+                - np.sum(w[~t1] * x[~t1]) / np.sum(w[~t1]))
+        return d, d
+
+    # renormalize weights to sum to 1 within each group
+    for g in np.unique(treat):
+        m = treat == g
+        w[m] = w[m] / w[m].sum()
+
+    order = np.argsort(x, kind="stable")
+    x_ord = x[order]
+    w_ord = w[order]
+    t_ord = treat[order]
+    # negate the first-appearing group's weights (t == t[0] in R)
+    first = t_ord == t_ord[0]
+    w_signed = w_ord.copy()
+    w_signed[first] = -w_signed[first]
+
+    cs = np.abs(np.cumsum(w_signed))
+    # keep positions at distinct-x boundaries: c(diff1(x_ord) != 0, TRUE)
+    keep = np.empty(x_ord.shape[0], dtype=bool)
+    keep[:-1] = np.diff(x_ord) != 0
+    keep[-1] = True
+    ediff = cs[keep]
+    return float(np.mean(ediff)), float(np.max(ediff))
+
+
+def balance_table(X, treat, weights=None, covariates=None):
+    """MatchIt ``summary()`` balance columns, before and/or after weighting.
+
+    For each covariate column of ``X`` returns the four balance statistics R's
+    ``summary.matchit`` reports with ``standardize=TRUE``:
+
+      * ``Std. Mean Diff.`` — ``(mean_t - mean_c) / sd_denom`` with
+        ``sd_denom = sqrt(wvar(treated, s.weights))`` (the ``s.d.denom="treated"``
+        default);
+      * ``Var. Ratio`` — ``wvar(treated, w) / wvar(control, w)``;
+      * ``eCDF Mean`` and ``eCDF Max`` — the standardized empirical-CDF
+        distance summaries (see ``_ecdf_std``).
+
+    Group means use ``weights`` (``w * s.weights``; here ``s.weights == 1``).
+    The SMD denominator always uses the *unweighted* treated-group ``wvar`` so
+    the same denominator applies before and after (MatchIt convention).
+
+    Parameters
+    ----------
+    X : (n, p) covariate matrix.
+    treat : (n,) 0/1 treatment indicator.
+    weights : optional (n,) weights (matching or balancing).  ``None`` -> the
+        unadjusted (all-ones) sample.
+    covariates : optional column names for the returned dict order.
+
+    Returns
+    -------
+    dict with keys ``"vars"``, ``"std_mean_diff"``, ``"var_ratio"``,
+    ``"ecdf_mean"``, ``"ecdf_max"`` (each a list / array over columns).
+    """
+    X = np.asarray(X, float)
+    treat = np.asarray(treat)
+    n, p = X.shape
+    ww = np.ones(n, float) if weights is None else np.asarray(weights, float)
+
+    i1 = treat == 1
+    i0 = treat == 0
+
+    smd = np.empty(p)
+    vr = np.empty(p)
+    em = np.empty(p)
+    ex = np.empty(p)
+
+    for j in range(p):
+        xx = X[:, j]
+        bin_var = np.all((xx == 0) | (xx == 1))
+
+        m_t = np.sum(ww[i1] * xx[i1]) / np.sum(ww[i1])
+        m_c = np.sum(ww[i0] * xx[i0]) / np.sum(ww[i0])
+        mdiff = m_t - m_c
+
+        # s.d.denom = "treated": UNWEIGHTED (s.weights all 1) treated wvar
+        std = np.sqrt(_wvar(xx[i1], np.ones(np.sum(i1)), bin_var))
+        smd[j] = mdiff / std if abs(mdiff) > np.sqrt(np.finfo(float).eps) else 0.0
+
+        if bin_var:
+            vr[j] = np.nan
+            em[j] = ex[j] = abs(mdiff)
+        else:
+            vr[j] = _wvar(xx[i1], ww[i1], bin_var) / _wvar(xx[i0], ww[i0], bin_var)
+            em[j], ex[j] = _ecdf_std(xx, treat, ww)
+
+    return {
+        "vars": (list(covariates) if covariates is not None
+                 else [f"x{j}" for j in range(p)]),
+        "std_mean_diff": smd,
+        "var_ratio": vr,
+        "ecdf_mean": em,
+        "ecdf_max": ex,
+    }

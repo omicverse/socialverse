@@ -269,6 +269,11 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
     backend = "path_ml_statsmodels"
     loadings_out: dict[str, dict[str, float]] = {}
     fit: dict[str, Any] = {}
+    # full lavaan fit-index battery + modification indices, populated only when
+    # the pylavaan port drives the fit (empty otherwise so downstream code that
+    # reads them can branch on presence).
+    full_fit_measures: dict[str, Any] = {}
+    modification_indices_out: list[dict[str, Any]] = []
 
     # ---- pylavaan faithful ML-CFA (preferred, gated 1e-6 vs R) ------------
     # Delegate the exact normal-theory ML confirmatory factor analysis to the
@@ -317,6 +322,62 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
                 "baseline_df": float(_fm["baseline_df"]),
                 "backend": "pylavaan",
             }
+            # ---- full lavaan fitMeasures() battery -----------------------
+            # Surface the complete fit-index battery (AIC/BIC/BIC2/logl/npar/
+            # rmsea CI/gfi/agfi/nfi/tli/...) exactly as the port returns it
+            # (lavaan-style keys, dots -> underscores). Kept as a nested dict
+            # under models['cfa']['fit_measures'] so the existing flat ``fit``
+            # keys downstream code + tests depend on are never touched.
+            try:
+                from ..external.pylavaan import fit_measures as _pl_fit_measures
+
+                _full = _pl_fit_measures(_res)
+                full_fit_measures = {str(_k): float(_v) for _k, _v in _full.items()}
+            except Exception:
+                full_fit_measures = {str(_k): float(_v) for _k, _v in _fm.items()}
+            # also expose the extra battery members on the flat ``fit`` dict
+            # (additive only — never renames/removes an existing key). Maps a
+            # public flat key -> the port's lavaan-style (lowercased) key.
+            for _flat_k, _src in (
+                ("pvalue", "pvalue"),
+                ("NFI", "nfi"),
+                ("GFI", "gfi"),
+                ("AGFI", "agfi"),
+                ("RMSEA_ci_lower", "rmsea_ci_lower"),
+                ("RMSEA_ci_upper", "rmsea_ci_upper"),
+                ("RMSEA_pvalue", "rmsea_pvalue"),
+                ("AIC", "aic"),
+                ("BIC", "bic"),
+                ("BIC2", "bic2"),
+                ("logl", "logl"),
+                ("unrestricted_logl", "unrestricted_logl"),
+                ("npar", "npar"),
+            ):
+                if _src in full_fit_measures and _flat_k not in fit:
+                    fit[_flat_k] = full_fit_measures[_src]
+            # ---- modification indices (score / LM test + EPC) ------------
+            # Top univariate score-test MIs for every currently-fixed
+            # parameter (cross-loadings + residual covariances), sorted by MI.
+            try:
+                from ..external.pylavaan import (
+                    modification_indices as _pl_modindices,
+                )
+
+                _mi_rows = _pl_modindices(_res, sort=True)
+                _top_k = int(kwargs.get("mi_top_k", 10) or 10)
+                modification_indices_out = [
+                    {
+                        "lhs": str(_r["lhs"]),
+                        "op": str(_r["op"]),
+                        "rhs": str(_r["rhs"]),
+                        "mi": float(_r["mi"]),
+                        "epc": float(_r["epc"]),
+                    }
+                    for _r in _mi_rows
+                    if _r.get("mi") == _r.get("mi")  # drop NaN MIs
+                ][:_top_k]
+            except Exception:
+                modification_indices_out = []
             # factor correlation matrix (Φ), mirroring the multi-factor fallback
             # so consumers that read ``fit["factor_correlation"]`` still find it.
             _psi = _res.model.matrices(_res.theta)[2]
@@ -412,6 +473,10 @@ def cfa(state: StudyState, **kwargs: Any) -> StudyState:
                              else "block-wise ML loadings + estimated Φ (honest approximation)"))),
         "mean_loading": float(np.mean(all_loadings)) if all_loadings else float("nan"),
         "prop_positive": float(np.mean([v > 0 for v in all_loadings])) if all_loadings else float("nan"),
+        # full lavaan fitMeasures() battery + score-test modification indices;
+        # only populated by the pylavaan backend (empty {}/[] otherwise).
+        "fit_measures": full_fit_measures,
+        "modification_indices": modification_indices_out,
     }
 
     state.write("models", "cfa", cfa_model)

@@ -321,7 +321,7 @@ def meta_random(state: StudyState, **kwargs: Any) -> StudyState:
         from ..external.pymetafor import rma as _rma_port
         r = _rma_port(y, v, method=method, test=("knha" if hk else "z"))
         pi = r.predict()
-        state.write("models", "meta", {
+        out = {
             "model": "random", "method": method, "estimate": float(r.beta[0]),
             "se": float(r.se[0]), "ci_lb": float(r.ci_lb[0]), "ci_ub": float(r.ci_ub[0]),
             "zval": float(r.zval[0]), "pval": float(r.pval[0]),
@@ -329,7 +329,21 @@ def meta_random(state: StudyState, **kwargs: Any) -> StudyState:
             "I2": r.I2, "H2": r.H2, "QE": r.QE, "QEp": r.QEp,
             "pi_lb": pi["pi_lb"], "pi_ub": pi["pi_ub"],
             "k": r.k, "knapp_hartung": hk, "backend": "pymetafor",
-        })
+        }
+        # Per-study BLUP (empirical-Bayes shrinkage): 把每个观测效应向合并值收缩,
+        # 给出收缩后的预测、SE 与预测区间(metafor::blup.rma.uni 等价)。
+        try:
+            from ..external.pymetafor import blup as _blup_port
+            bl = _blup_port(r)
+            out["blup"] = [
+                {"pred": float(bl.pred[i]), "se": float(bl.se[i]),
+                 "pi_lb": float(bl.pi_lb[i]), "pi_ub": float(bl.pi_ub[i])}
+                for i in range(len(bl.pred))
+            ]
+        except Exception as exc:  # never let BLUP break the pooled result
+            out["blup"] = None
+            out["blup_note"] = f"BLUP unavailable: {exc}"
+        state.write("models", "meta", out)
         return state
 
     tau2 = _estimate_tau2(y, v, method)

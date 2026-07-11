@@ -40,3 +40,14 @@ ref <- jsonlite::fromJSON("pymetafor/tests/reference.json", simplifyVector=TRUE)
 ref$rma_mods_centered <- outc
 write(jsonlite::toJSON(ref, auto_unbox=TRUE, digits=15, pretty=TRUE), "pymetafor/tests/reference.json")
 cat("added centered-mods case; cond well-behaved\n")
+
+# 7. BLUP (best linear unbiased predictors) — empirical-Bayes shrinkage per study
+#    on the default REML random-effects fit (intercept-only).
+mb <- rma(yi, vi, method="REML")
+bl <- blup(mb)
+ref <- jsonlite::fromJSON("pymetafor/tests/reference.json", simplifyVector=TRUE)
+ref$blup_reml <- list(
+  pred=as.numeric(bl$pred), se=as.numeric(bl$se),
+  pi.lb=as.numeric(bl$pi.lb), pi.ub=as.numeric(bl$pi.ub))
+write(jsonlite::toJSON(ref, auto_unbox=TRUE, digits=15, pretty=TRUE), "pymetafor/tests/reference.json")
+cat("added blup_reml (k=", length(bl$pred), ")\n")

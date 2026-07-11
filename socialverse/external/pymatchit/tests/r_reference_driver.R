@@ -26,6 +26,51 @@ smd_before <- s$sum.all[, "Std. Mean Diff."]
 smd_after  <- s$sum.matched[, "Std. Mean Diff."]
 smd_vars   <- rownames(s$sum.all)   # c("distance", covs...)
 
+# --- extensions: WeightIt::get_w_from_ps + MatchIt Mahalanobis + summary() ---
+suppressMessages(library(WeightIt))
+
+ps  <- as.numeric(m$distance)          # fitted propensity score (P(treat=1))
+trt <- as.integer(lalonde$treat)
+
+# (1) get_w_from_ps -> balancing weights for ATE / ATT / ATC
+w_ate <- as.numeric(get_w_from_ps(ps, trt, estimand = "ATE"))
+w_att <- as.numeric(get_w_from_ps(ps, trt, estimand = "ATT"))
+w_atc <- as.numeric(get_w_from_ps(ps, trt, estimand = "ATC"))
+
+# (2) mahalanobis_dist: n1 x n0 pairwise (scaled) Mahalanobis distances.
+#     Use the treat-supplied path via a Mahalanobis matchit and its distance
+#     helper. We call the internal directly on the covariate formula.
+maha <- getFromNamespace("mahalanobis_dist", "MatchIt")
+Dm <- maha(treat ~ age + educ + re74 + re75, data = lalonde)
+# Dm rows = treated rownames, cols = control rownames
+maha_rows <- rownames(Dm)
+maha_cols <- colnames(Dm)
+# flatten row-major so Python can rebuild the same (n1 x n0) matrix
+Dm_flat <- as.numeric(t(Dm))
+
+# (3) summary() balance table with propensity-score weights (ATT weights),
+#     giving the WEIGHTED (after) balance columns; the all-ones gives before.
+#     Build a WeightIt-weighted matchit-style balance via summary.matchit on a
+#     weighting object is complex; instead report the raw covariate balance
+#     columns MatchIt computes for the nearest-match object above (before/after
+#     matching) plus the covariate-only eCDF/VarRatio for the parity of the
+#     balance_table() port.
+bt_vars   <- rownames(s$sum.all)
+bt_before <- list(
+  std_mean_diff = as.numeric(s$sum.all[, "Std. Mean Diff."]),
+  var_ratio     = as.numeric(s$sum.all[, "Var. Ratio"]),
+  ecdf_mean     = as.numeric(s$sum.all[, "eCDF Mean"]),
+  ecdf_max      = as.numeric(s$sum.all[, "eCDF Max"])
+)
+bt_after <- list(
+  std_mean_diff = as.numeric(s$sum.matched[, "Std. Mean Diff."]),
+  var_ratio     = as.numeric(s$sum.matched[, "Var. Ratio"]),
+  ecdf_mean     = as.numeric(s$sum.matched[, "eCDF Mean"]),
+  ecdf_max      = as.numeric(s$sum.matched[, "eCDF Max"])
+)
+# matching weights R used for the "after" columns
+match_w <- as.numeric(m$weights)
+
 out <- list(
   data = list(
     rownames = rn,
@@ -40,7 +85,15 @@ out <- list(
   match = list(treated = names(mm), control = as.character(mm)),
   smd = list(vars = smd_vars,
              before = as.numeric(smd_before),
-             after  = as.numeric(smd_after))
+             after  = as.numeric(smd_after)),
+  get_w_from_ps = list(ate = w_ate, att = w_att, atc = w_atc),
+  mahalanobis = list(rows = maha_rows, cols = maha_cols,
+                     n1 = nrow(Dm), n0 = ncol(Dm),
+                     flat = Dm_flat),
+  balance_table = list(vars = bt_vars,
+                       match_weights = match_w,
+                       before = bt_before,
+                       after = bt_after)
 )
 
 write(toJSON(out, auto_unbox = TRUE, digits = 15, pretty = TRUE),

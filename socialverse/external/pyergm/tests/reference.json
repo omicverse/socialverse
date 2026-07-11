@@ -19,12 +19,32 @@
       [0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0]
     ],
     "wealth": [10, 36, 55, 44, 20, 32, 8, 42, 103, 48, 49, 3, 27, 10, 146, 48],
+    "priorates": [53, 65, 0, 12, 22, 0, 21, 0, 53, 0, 42, 0, 38, 35, 74, 0],
     "n": 16,
-    "directed": false
+    "directed": false,
+    "dir_adjacency": [
+      [0, 1, 0, 1, 0],
+      [0, 0, 1, 0, 1],
+      [1, 0, 0, 1, 0],
+      [0, 0, 1, 0, 1],
+      [1, 0, 0, 0, 0]
+    ]
   },
   "mple": {
     "terms": ["edges", "nodecov.wealth"],
     "coef": [-2.594929031786459, 0.0105459128338246],
-    "se": [0.5360560399395933, 0.004674255075546139]
+    "se": [0.5360560399395933, 0.00467425507554614]
+  },
+  "summary_undirected": {
+    "terms": ["edges", "triangle", "degree0", "degree1", "degree2", "degree3", "degree4", "degree5", "degree6", "kstar2", "nodecov.wealth", "nodematch.priorates"],
+    "stats": [20, 3, 1, 4, 2, 6, 2, 0, 1, 47, 2168, 1]
+  },
+  "summary_directed": {
+    "terms": ["edges", "mutual", "istar2", "ostar2", "idegree1", "idegree2", "odegree1", "odegree2"],
+    "stats": [9, 1, 4, 4, 1, 4, 1, 4]
+  },
+  "triad_census": {
+    "labels": ["003", "012", "102", "021D", "021U", "021C", "111D", "111U", "030T", "030C", "201", "120D", "120U", "120C", "210", "300"],
+    "counts": [0, 0, 0, 2, 2, 0, 1, 1, 0, 3, 0, 0, 0, 1, 0, 0]
   }
 }

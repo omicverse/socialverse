@@ -6,12 +6,15 @@ statistics as predictors. MCMC-MLE (stochastic) is intentionally out of scope.
 """
 from .pyergm import (
     MPLEResult,
+    TRIAD_CENSUS_LABELS,
     build_design,
     change_stats_edges,
     change_stats_nodecov,
     change_stats_nodematch,
     dyads,
     ergm_mple,
+    summary_formula,
+    triad_census,
 )
 
 __all__ = [
@@ -22,5 +25,8 @@ __all__ = [
     "change_stats_nodecov",
     "change_stats_nodematch",
     "MPLEResult",
+    "summary_formula",
+    "triad_census",
+    "TRIAD_CENSUS_LABELS",
 ]
 __ergm_reference_version__ = "4.x"

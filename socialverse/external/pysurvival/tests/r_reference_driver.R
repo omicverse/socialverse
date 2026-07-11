@@ -26,6 +26,37 @@ out$cox_breslow <- list(coef=as.numeric(coef(cox_b)),
 out$cox_data <- list(time=lung2$time, status=lung2$status,
                      age=lung2$age, sex=lung2$sex, ph.ecog=lung2$ph.ecog)
 
+# --- clogit: conditional logistic on matched case-control (infert) ---
+data(infert)
+cl <- clogit(case ~ spontaneous + induced + strata(stratum), data=infert)
+out$clogit <- list(coef=as.numeric(coef(cl)),
+                   se=as.numeric(sqrt(diag(vcov(cl)))),
+                   loglik=cl$loglik)                 # (null, fitted)
+out$clogit_data <- list(case=infert$case, stratum=infert$stratum,
+                        spontaneous=infert$spontaneous, induced=infert$induced)
+
+# --- survreg: parametric AFT (Weibull / exponential / lognormal) on lung ---
+lung3 <- na.omit(lung[, c("time","status","age","sex")])
+srw <- survreg(Surv(time, status) ~ age + sex, data=lung3, dist="weibull")
+out$survreg_weibull <- list(coef=as.numeric(coef(srw)),   # (Intercept, age, sex)
+                            scale=as.numeric(srw$scale),
+                            se=as.numeric(sqrt(diag(vcov(srw)))),  # [coef..., Log(scale)]
+                            loglik=as.numeric(srw$loglik[2]))
+sre <- survreg(Surv(time, status) ~ age + sex, data=lung3, dist="exponential")
+out$survreg_exp <- list(coef=as.numeric(coef(sre)),
+                        scale=as.numeric(sre$scale),
+                        se=as.numeric(sqrt(diag(vcov(sre)))),      # [coef...] only
+                        loglik=as.numeric(sre$loglik[2]))
+srl <- survreg(Surv(time, status) ~ age + sex, data=lung3, dist="lognormal")
+out$survreg_lognormal <- list(coef=as.numeric(coef(srl)),
+                              scale=as.numeric(srl$scale),
+                              se=as.numeric(sqrt(diag(vcov(srl)))),
+                              loglik=as.numeric(srl$loglik[2]))
+out$survreg_data <- list(time=lung3$time, status=lung3$status,
+                         age=lung3$age, sex=lung3$sex)
+
 write(toJSON(out, auto_unbox=TRUE, digits=15, pretty=TRUE), "pysurvival/tests/reference.json")
 cat("survival", as.character(packageVersion("survival")),
-    "-> reference.json (n=", nrow(lung2), ", cox efron coef=", round(coef(cox_e),5), ")\n")
+    "-> reference.json (n=", nrow(lung2), ", cox efron coef=", round(coef(cox_e),5),
+    ", clogit coef=", round(coef(cl),5),
+    ", survreg.wb scale=", round(srw$scale,5), ")\n")

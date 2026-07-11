@@ -336,3 +336,107 @@ def _cr2(Xreg, r_weights, e_r, groups, k_vec, Q, N, M, p, modelweights):
         dfs[i] = tr_sq / sq_tr
 
     return VR, dfs
+
+
+# --------------------------------------------------------------------------- #
+#  clubSandwich: impute_covariance_matrix                                     #
+# --------------------------------------------------------------------------- #
+def impute_covariance_matrix(vi, cluster, r, return_list=True):
+    """Block-diagonal covariance from marginal variances + within-cluster r.
+
+    Reconstructs ``clubSandwich::impute_covariance_matrix(vi, cluster, r)``
+    (the constant-correlation, no-``ar1`` path).  For each cluster the block is
+
+        V_ij = (r + (1 - r) * I_ij) * sqrt(vi_i) * sqrt(vi_j),
+
+    i.e. diagonal entries equal ``vi`` and off-diagonals ``r * sqrt(vi_i vi_j)``.
+
+    Parameters
+    ----------
+    vi : (M,) marginal sampling variances.
+    cluster : (M,) cluster identifiers.
+    r : scalar assumed within-cluster correlation (a single value; clubSandwich
+        also accepts a per-cluster vector, which is recycled — here we accept a
+        scalar, the canonical use).
+    return_list : if True (matching clubSandwich's default when the cluster is
+        already in sorted, contiguous order) return a list of per-cluster blocks
+        in sorted-cluster order.  If False, return the full (M, M) block-diagonal
+        matrix in the *original* row order.
+
+    Returns
+    -------
+    list of (k_j, k_j) numpy arrays (return_list=True), or a single (M, M)
+    numpy array (return_list=False).
+    """
+    vi = np.asarray(vi, float)
+    cluster = np.asarray(cluster)
+    r = float(r)
+
+    uniq = np.unique(cluster)  # droplevels(as.factor) -> sorted levels
+    blocks = []
+    for c in uniq:
+        idx = np.where(cluster == c)[0]
+        v = vi[idx]
+        sd = np.sqrt(v)
+        k = len(v)
+        corr = r + np.eye(k) * (1.0 - r)      # r off-diag, 1 on diag
+        block = corr * np.outer(sd, sd)
+        blocks.append(block)
+
+    if return_list:
+        return blocks
+
+    # unblock into original order (clubSandwich: build in sorted-cluster order,
+    # then re-index by order(order(cluster))).
+    M = len(vi)
+    full_sorted = np.zeros((M, M))
+    # rows in sorted-cluster order
+    sorted_rows = np.concatenate([np.where(cluster == c)[0] for c in uniq])
+    pos = 0
+    for block in blocks:
+        k = block.shape[0]
+        full_sorted[pos:pos + k, pos:pos + k] = block
+        pos += k
+    # map sorted position -> original row
+    perm = np.empty(M, dtype=int)
+    perm[np.arange(M)] = sorted_rows          # perm[sorted_pos] = orig_row
+    out = np.zeros((M, M))
+    out[np.ix_(sorted_rows, sorted_rows)] = full_sorted
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  clubSandwich: coef_test(vcov="CR2")                                        #
+# --------------------------------------------------------------------------- #
+def coef_test(fit, vcov="CR2"):
+    """Per-coefficient robust t-test with Tipton (2015) Satterthwaite df.
+
+    Reconstructs ``clubSandwich::coef_test(robu_fit, vcov="CR2")``.  For a
+    ``robu`` fit (the default, non-user-weighted, inverse-variance working
+    model) clubSandwich's CR2 sandwich and Satterthwaite df coincide
+    element-for-element with the small-sample quantities already computed by
+    :func:`robu` (``SE`` and ``dfs``).  This wrapper packages them into the
+    per-coefficient test table clubSandwich returns.
+
+    Parameters
+    ----------
+    fit : dict returned by :func:`robu` (must be ``small=True``).
+    vcov : only ``"CR2"`` is supported (the clubSandwich default of interest).
+
+    Returns
+    -------
+    dict with arrays (length p+1): beta, SE, tstat, df, p_val.
+    """
+    from scipy import stats
+
+    if str(vcov).upper() != "CR2":
+        raise ValueError("Only vcov='CR2' is supported.")
+
+    beta = np.asarray(fit["b"], float)
+    SE = np.asarray(fit["SE"], float)
+    df = np.asarray(fit["dfs"], float)
+    tstat = beta / SE
+    # calc_pval two-sided: 2 * pt(-|t|, df)
+    p_val = 2.0 * stats.t.cdf(-np.abs(tstat), df)
+
+    return dict(beta=beta, SE=SE, tstat=tstat, df=df, p_val=p_val)

@@ -271,6 +271,11 @@ def reitsma(data=None, TP=None, FN=None, FP=None, TN=None,
 
     N = len(TP)
 
+    # Raw (uncorrected) counts -- mada stores these in fit$freqdata and derives
+    # the observed FPR range (used for the partial-AUC integration) from them.
+    FP_raw = FP.copy()
+    TN_raw = TN.copy()
+
     # --- continuity correction ---
     if correction_control == "all":
         if np.any(np.concatenate([TP, FN, FP, TN]) == 0):
@@ -335,7 +340,132 @@ def reitsma(data=None, TP=None, FN=None, FP=None, TN=None,
         "false_pos_rate": float(_plogis(coef[1])),
         "logLik": loglik_mvmeta + jac_adj,
         "par": par,
+        "alphasens": 1.0,
+        "alphafpr": 1.0,
+        # raw observed false-positive rates (FP/(FP+TN)) on the UNCORRECTED
+        # cell counts -- mada's fit$freqdata; drives the partial-AUC range.
+        "freq_fpr": FP_raw / (FP_raw + TN_raw),
     }
+
+
+# ---------------------------------------------------------------------------
+# HSROC coefficients and area under the Rutter-Gatsonis SROC curve (AUC.reitsma)
+# ---------------------------------------------------------------------------
+def calc_hsroc_coef(fit):
+    """Rutter-Gatsonis HSROC coefficients from a fitted Reitsma model.
+
+    Mirrors ``mada:::calc_hsroc_coef`` for the no-covariate (df == 5) case.
+    """
+    coef = np.asarray(fit["coefficients"], float)
+    Psi = np.asarray(fit["Psi"], float)
+    ran_sd = np.sqrt(np.diag(Psi))          # (sd_sens, sd_fpr)
+    sd1, sd2 = ran_sd[0], ran_sd[1]
+    Theta = 0.5 * (np.sqrt(sd2 / sd1) * coef[0] + np.sqrt(sd1 / sd2) * coef[1])
+    Lambda = np.sqrt(sd2 / sd1) * coef[0] - np.sqrt(sd1 / sd2) * coef[1]
+    sigma2theta = 0.5 * (sd1 * sd2 + Psi[0, 1])
+    sigma2alpha = 2.0 * (sd1 * sd2 - Psi[0, 1])
+    beta = np.log(sd2 / sd1)
+    return {
+        "Theta": float(Theta),
+        "Lambda": float(Lambda),
+        "beta": float(beta),
+        "sigma2theta": float(sigma2theta),
+        "sigma2alpha": float(sigma2alpha),
+    }
+
+
+def _sroc_ruttergatsonis(fit):
+    """Return the Rutter-Gatsonis SROC function sens = f(fpr).
+
+    ``f(x) = inv.trafo(alphasens, Lambda*exp(-beta/2) + exp(-beta)*trafo(alphafpr, x))``.
+    With ``alphasens = alphafpr = 1`` the transforms are the plain logit /
+    inverse-logit (``talpha(1)``).
+    """
+    hs = calc_hsroc_coef(fit)
+    Lambda, beta = hs["Lambda"], hs["beta"]
+    alphasens = fit.get("alphasens", 1.0)
+    alphafpr = fit.get("alphafpr", 1.0)
+
+    def f(x):
+        x = np.asarray(x, float)
+        # trafo(alphafpr, x) with alpha==1 is logit(x)
+        lin = Lambda * np.exp(-beta / 2.0) + np.exp(-beta) * _trafo(alphafpr, x)
+        return _inv_trafo(alphasens, lin)
+
+    return f
+
+
+def _trafo(alpha, x):
+    # talpha(alpha)$linkfun; alpha == 1 => logit
+    if alpha == 1.0:
+        return _logit(x)
+    raise NotImplementedError("only alpha == 1 (logit) is supported")
+
+
+def _inv_trafo(alpha, x):
+    # talpha(alpha)$linkinv; alpha == 1 => plogis
+    if alpha == 1.0:
+        return _plogis(x)
+    raise NotImplementedError("only alpha == 1 (logit) is supported")
+
+
+def _auc_default(sroc, fpr):
+    """Trapezoidal area under ``sroc`` sampled at the vector ``fpr``.
+
+    Ports ``mada:::AUC.default``:
+        ``AUC = (s[0]/2 + sum(s[1:n-1]) + s[n-1]/2) / n``   (n = len(fpr))
+    """
+    fpr = np.asarray(fpr, float)
+    if fpr.ndim != 1:
+        raise ValueError("fpr must be a vector")
+    if np.any(fpr < 0) or np.any(fpr > 1):
+        raise ValueError("fpr values must lie in [0, 1]")
+    n = len(fpr)
+    if n < 10:
+        raise ValueError("specify at least 10 FPR values!")
+    s = np.asarray(sroc(fpr), float)
+    if np.any(s < 0) or np.any(s > 1):
+        raise ValueError("sroc values must lie in [0, 1]")
+    return float((s[0] / 2.0 + np.sum(s[1:n - 1]) + s[n - 1] / 2.0) / n)
+
+
+def AUC(fit, fpr=None, sroc_type="ruttergatsonis"):
+    """Area (and partial area) under the Rutter-Gatsonis SROC curve.
+
+    Ports ``mada:::AUC.reitsma`` for the no-covariate model.  Returns a dict
+    ``{"AUC": ..., "pAUC": ...}`` where
+
+    * ``AUC``  integrates the SROC over ``fpr = 1:99/100`` (the mada default).
+    * ``pAUC`` integrates over 99 equally-spaced FPR values across the OBSERVED
+      false-positive-rate range (``fit["freq_fpr"]``), clamped to ``[0.01,
+      0.99]`` exactly as mada does.
+
+    Parameters
+    ----------
+    fit : dict
+        A fit returned by :func:`reitsma`.
+    fpr : array-like, optional
+        FPR grid for the full AUC (default ``arange(1, 100)/100``).
+    sroc_type : {"ruttergatsonis", "naive"}
+        Only ``"ruttergatsonis"`` is implemented (the AUC.reitsma default).
+    """
+    if sroc_type != "ruttergatsonis":
+        raise NotImplementedError("only sroc_type='ruttergatsonis' is supported")
+    if fpr is None:
+        fpr = np.arange(1, 100) / 100.0
+
+    rsroc = _sroc_ruttergatsonis(fit)
+    auc = _auc_default(rsroc, fpr)
+
+    # partial AUC over the observed (clamped) FPR range
+    obs = np.asarray(fit["freq_fpr"], float)
+    lo, hi = float(np.min(obs)), float(np.max(obs))
+    lo = max(0.01, lo)
+    hi = min(0.99, hi)
+    obsfpr = np.linspace(lo, hi, 99)
+    pauc = _auc_default(rsroc, obsfpr)
+
+    return {"AUC": auc, "pAUC": pauc}
 
 
 def _vmmin_maximize(b0, fn, gr, reltol, maxit=100, abstol=-np.inf):

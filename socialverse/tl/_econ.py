@@ -26,7 +26,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["replicate"]
+__all__ = ["replicate", "poisson_fe"]
 
 
 # --------------------------------------------------------------------------- utils
@@ -394,6 +394,178 @@ def _twfe_pyfixest(
         return None
 
 
+def _ppml_pyfixest_port(
+    df: pd.DataFrame,
+    outcome: str,
+    regressors: list[str],
+    fe: list[str],
+    cluster: str | None,
+) -> dict[str, Any] | None:
+    """PPML (Poisson pseudo-ML) with HD fixed effects via ``external.pyfixest.fepois``.
+
+    Faithful pure-numpy reconstruction of R ``fixest::fepois`` (proven to match
+    fixest for panels without all-zero/singleton FE drops). Requires a count-like
+    outcome, at least one regressor and at least one FE dimension; the cluster
+    defaults to the first FE dimension when none is supplied (fixest default).
+
+    Returns a per-regressor result dict, or ``None`` when preconditions are unmet
+    or on any error, so the caller can degrade gracefully.
+    """
+    fe_cols = [f for f in fe if f in df.columns]
+    rhs_cols = [c for c in regressors if c in df.columns]
+    if not fe_cols or not rhs_cols or outcome not in df.columns:
+        return None
+    try:
+        from ..external.pyfixest import fepois as _port_fepois
+        from math import erfc, sqrt
+
+        work = df.copy()
+        y_ser = pd.to_numeric(work[outcome], errors="coerce")
+        x_df = work[rhs_cols].apply(pd.to_numeric, errors="coerce")
+
+        # cluster defaults to first FE dimension (fixest default) when absent
+        clu = cluster if (cluster and cluster in work.columns) else fe_cols[0]
+        group_cols = list(dict.fromkeys(fe_cols + [clu]))
+
+        mask = y_ser.notna() & x_df.notna().all(axis=1)
+        for gc in group_cols:
+            mask &= work[gc].notna()
+        if not bool(mask.any()):
+            return None
+
+        y = y_ser[mask].to_numpy(dtype=float)
+        # Poisson outcome must be non-negative
+        if np.any(y < 0):
+            return None
+        X = x_df[mask].to_numpy(dtype=float)
+        n = int(mask.sum())
+        if n <= X.shape[1]:
+            return None
+
+        fe_arrays = [work.loc[mask, fc].to_numpy() for fc in fe_cols]
+        fe_arg = fe_arrays if len(fe_arrays) > 1 else fe_arrays[0]
+        cluster_arr = work.loc[mask, clu].to_numpy()
+
+        res = _port_fepois(y, X, fe_arg, cluster_arr)
+
+        coefs = np.asarray(res["coef"], dtype=float).ravel()
+        ses = np.asarray(res["se"], dtype=float).ravel()
+        terms = {}
+        for i, name in enumerate(rhs_cols):
+            coef = float(coefs[i])
+            se = float(ses[i])
+            tstat = float(coef / se) if se else float("nan")
+            pvalue = float(erfc(abs(tstat) / sqrt(2.0))) if tstat == tstat else float("nan")
+            terms[name] = {
+                "coef": coef,
+                "se": se,
+                "tstat": tstat,
+                "pvalue": pvalue,
+                "ci_low": coef - 1.96 * se,
+                "ci_high": coef + 1.96 * se,
+                "irr": float(np.exp(coef)),  # incidence-rate ratio
+            }
+        # headline term = the first regressor
+        head = terms[rhs_cols[0]]
+        return {
+            **head,
+            "terms": terms,
+            "outcome": outcome,
+            "regressors": rhs_cols,
+            "fe": fe_cols,
+            "n": int(res.get("nobs", n)),
+            "n_clusters": int(res.get("n_clusters", 0)),
+            "deviance": float(res.get("deviance", float("nan"))),
+            "n_iter": int(res.get("n_iter", 0)),
+            "se_kind": f"CRV1({clu})",
+            "backend": "pyfixest.fepois",
+        }
+    except Exception:
+        return None
+
+
+def _newey_west_hac(
+    df: pd.DataFrame,
+    outcome: str,
+    regressors: list[str],
+    time: str | None,
+    lag: int | None = None,
+) -> dict[str, Any] | None:
+    """OLS with a Newey-West (Bartlett-kernel) HAC vcov via ``external.pyfixest.newey_west``.
+
+    Used on the time-series estimation path where a time index is available; rows
+    are ordered by ``time`` before forming autocovariances (NW is order-aware).
+    When ``lag`` is ``None`` the standard ``floor(4*(N/100)^(2/9))`` rule of thumb
+    is used. Returns the headline (first-regressor) result dict, or ``None`` when
+    preconditions are unmet or on any error.
+    """
+    rhs_cols = [c for c in regressors if c in df.columns]
+    if not rhs_cols or outcome not in df.columns:
+        return None
+    try:
+        from ..external.pyfixest import newey_west as _port_nw
+        from math import erfc, sqrt
+
+        work = df.copy()
+        y_ser = pd.to_numeric(work[outcome], errors="coerce")
+        x_df = work[rhs_cols].apply(pd.to_numeric, errors="coerce")
+
+        mask = y_ser.notna() & x_df.notna().all(axis=1)
+        order_arr = None
+        if time and time in work.columns:
+            t_ser = pd.to_numeric(work[time], errors="coerce")
+            # fall back to raw labels if time is non-numeric
+            if t_ser.notna().any():
+                mask &= t_ser.notna()
+        if not bool(mask.any()):
+            return None
+
+        y = y_ser[mask].to_numpy(dtype=float)
+        X = x_df[mask].to_numpy(dtype=float)
+        n = int(mask.sum())
+        if n <= X.shape[1] + 1:
+            return None
+        if time and time in work.columns:
+            order_arr = work.loc[mask, time].to_numpy()
+
+        L = lag if lag is not None else int(np.floor(4.0 * (n / 100.0) ** (2.0 / 9.0)))
+        L = max(0, int(L))
+
+        res = _port_nw(y, X, L, add_intercept=True, order=order_arr)
+
+        coefs = np.asarray(res["coef"], dtype=float).ravel()
+        ses = np.asarray(res["se"], dtype=float).ravel()
+        # coef[0]/se[0] is the intercept; regressor i is at index i+1
+        terms = {}
+        for i, name in enumerate(rhs_cols):
+            coef = float(coefs[i + 1])
+            se = float(ses[i + 1])
+            tstat = float(coef / se) if se else float("nan")
+            pvalue = float(erfc(abs(tstat) / sqrt(2.0))) if tstat == tstat else float("nan")
+            terms[name] = {
+                "coef": coef,
+                "se": se,
+                "tstat": tstat,
+                "pvalue": pvalue,
+                "ci_low": coef - 1.96 * se,
+                "ci_high": coef + 1.96 * se,
+            }
+        head = terms[rhs_cols[0]]
+        return {
+            **head,
+            "terms": terms,
+            "intercept": float(coefs[0]),
+            "outcome": outcome,
+            "regressors": rhs_cols,
+            "lag": L,
+            "n": int(res.get("nobs", n)),
+            "se_kind": f"Newey-West(L={L})",
+            "backend": "pyfixest.newey_west",
+        }
+    except Exception:
+        return None
+
+
 def _robustness_matrix(
     df: pd.DataFrame,
     outcome: str,
@@ -585,6 +757,23 @@ def replicate(state: StudyState, **kwargs: Any) -> StudyState:
         baseline = {"coef": float("nan"), "se": float("nan"), "backend": "unavailable", "n": 0}
     baseline["schema"] = schema
 
+    # 3b. Newey-West HAC vcov (time-series robustness) ------------------------
+    # When a time index is available we additionally report a HAC (Newey-West,
+    # Bartlett-kernel) covariance for the treatment + controls path — the
+    # autocorrelation-consistent companion to the clustered baseline. Purely
+    # additive: attached as a new key, never replacing the clustered baseline.
+    nw_hac = None
+    if outcome and treatment and schema.get("time"):
+        nw_hac = _newey_west_hac(
+            df,
+            outcome,
+            [treatment] + list(controls),
+            schema["time"],
+            lag=kwargs.get("nw_lag"),
+        )
+    if nw_hac is not None:
+        baseline["newey_west"] = nw_hac
+
     # 4. robustness matrix ----------------------------------------------------
     if outcome and treatment:
         robustness = _robustness_matrix(df, outcome, treatment, controls, fe, cluster)
@@ -611,6 +800,98 @@ def replicate(state: StudyState, **kwargs: Any) -> StudyState:
     state.write("models", "twfe", baseline)
     state.write("diagnostics", "balance", balance)
     state.write("diagnostics", "robustness", robustness)
+    if nw_hac is not None:
+        state.write("diagnostics", "newey_west", nw_hac)
     state.write("artifacts", "scripts", scripts)
     state.write("artifacts", "tables", tables)
+    return state
+
+
+@register(
+    name="poisson_fe",
+    aliases=["泊松固定效应", "ppml", "fepois"],
+    category="econ",
+    tier="pro",
+    skill="econometrics-replication",
+    languages=["Python", "R"],
+    key_tools=["pyfixest", "numpy", "run_r_code"],
+    description="PPML 泊松伪极大似然固定效应回归(fepois),吸收高维固定效应 + 聚类稳健标准误,写 models['fepois']",
+    requires={
+        "sources": ["datasets"],
+        "design": ["treatment"],
+    },
+    produces={
+        "models": ["fepois"],
+    },
+    prerequisites={"functions": ["replicate"]},
+    auto_fix="escalate",
+)
+def poisson_fe(state: StudyState, **kwargs: Any) -> StudyState:
+    """Poisson pseudo-maximum-likelihood (PPML) regression with fixed effects.
+
+    The workhorse for non-negative / count / multiplicative outcomes (trade
+    flows, event counts, expenditures) where OLS-in-logs is biased under
+    heteroskedasticity (Santos Silva & Tenreyro). Fixed effects are concentrated
+    out by weighted within-demeaning and standard errors are cluster-robust —
+    computed faithfully by the vendored ``external.pyfixest.fepois`` (a pure-numpy
+    reconstruction of R ``fixest::fepois``).
+
+    Schema resolution mirrors :func:`replicate`: the outcome, treatment, unit,
+    time and controls are read from ``kwargs`` → ``state`` → data heuristics. The
+    right-hand side is ``treatment + controls``; ``unit`` and ``time`` are absorbed
+    as fixed effects; the cluster defaults to the unit dimension (fixest default)
+    when not otherwise specified.
+
+    Data arrives via ``data=`` (a DataFrame) or ``state.sources['datasets']``;
+    when neither is present the deterministic synthetic panel is used (its ``y`` is
+    non-negative on the treated-effect scale, so the chain is exercisable without
+    external data). Never raises for missing/degenerate input — writes an
+    ``unavailable`` model dict with a graceful message instead.
+
+    Writes ``models['fepois']`` with keys: ``coef``/``se``/``tstat``/``pvalue``/
+    ``ci_low``/``ci_high``/``irr`` (headline = first regressor), ``terms`` (per-
+    regressor dict), ``outcome``/``regressors``/``fe``, ``n``/``n_clusters``/
+    ``deviance``/``n_iter``, ``se_kind``, ``backend`` and ``schema``.
+    """
+    data = kwargs.get("data")
+    if data is None:
+        data = state.sources.get("datasets")
+    df = _as_frame(data)
+    if df.empty:
+        df = _synthetic_panel(seed=0)
+
+    schema = _resolve_names(state, df, **kwargs)
+    outcome = schema["outcome"]
+    treatment = schema["treatment"]
+    controls = schema["controls"]
+    fe = [c for c in (schema["unit"], schema["time"]) if c]
+    cluster = schema["cluster"]
+
+    regressors = [treatment] + list(controls) if treatment else list(controls)
+    regressors = [c for c in regressors if c and c in df.columns]
+
+    result: dict[str, Any]
+    if outcome and regressors and fe:
+        est = _ppml_pyfixest_port(df, outcome, regressors, fe, cluster)
+        if est is not None:
+            result = est
+        else:
+            result = {
+                "coef": float("nan"),
+                "se": float("nan"),
+                "backend": "unavailable",
+                "n": 0,
+                "message": "PPML 无法估计:缺少有效结果变量/回归元/固定效应,或结果变量为负。",
+            }
+    else:
+        result = {
+            "coef": float("nan"),
+            "se": float("nan"),
+            "backend": "unavailable",
+            "n": 0,
+            "message": "PPML 无法估计:未解析到结果变量、回归元或固定效应维度。",
+        }
+    result["schema"] = schema
+
+    state.write("models", "fepois", result)
     return state

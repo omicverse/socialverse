@@ -41,7 +41,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["multilevel", "survival"]
+__all__ = ["multilevel", "survival", "conditional_logit", "aft_survreg"]
 
 
 # --------------------------------------------------------------------- helpers
@@ -474,6 +474,19 @@ def _km_curve(sm, dur: np.ndarray, status: np.ndarray) -> dict[str, Any]:
     Returns the step points plus median survival. Falls back to a hand-rolled
     product-limit estimator if ``statsmodels`` is unavailable.
     """
+    # Parity-gated Kaplan-Meier (external/pysurvival) — R survfit-exact, incl.
+    # Greenwood cumulative-hazard std.err + log-transform CI; supersedes the
+    # statsmodels curve. status is the 1=event indicator pysurvival.km expects.
+    try:
+        from ..external.pysurvival import km as _km_port
+        r = _km_port(np.asarray(dur, float), np.asarray(status, int))
+        med = None if not np.isfinite(r.median) else float(r.median)
+        return {"times": r.time.tolist(), "surv": r.surv.tolist(),
+                "std_err": r.std_err.tolist(), "lower": r.lower.tolist(),
+                "upper": r.upper.tolist(), "median": med,
+                "n": int(len(dur)), "backend": "pysurvival"}
+    except Exception:
+        pass
     if sm is not None:
         try:
             sf = sm.SurvfuncRight(dur, status)
@@ -686,3 +699,234 @@ def _ph_time_interaction_fallback(
         "method": "fallback: 单协变量 × log(time) 交互 LR 检验 (Bonferroni 合并)",
         "note": "PH 假设" + ("成立" if verdict == "pass" else "被拒" if verdict == "fail" else "未知"),
     }
+
+
+# ------------------------------------------------------------- conditional_logit
+@register(
+    name="conditional_logit",
+    aliases=["条件Logit", "clogit", "配对Logit", "固定效应Logit"],
+    category="longitudinal",
+    tier="plus",
+    skill="(条件Logit 缺口)",
+    languages=["Python"],
+    key_tools=["pysurvival"],
+    description="条件(固定效应)Logistic 回归(clogit):分层匹配集精确条件似然,消除层内固定效应",
+    requires={"sources": ["datasets"], "variables": ["outcome"]},
+    produces={"models": ["clogit"]},
+    auto_fix="escalate",
+)
+def conditional_logit(state: StudyState, **kwargs: Any) -> StudyState:
+    """Conditional (fixed-effects) logistic regression — matched/stratified clogit.
+
+    Fits the exact conditional partial likelihood (``survival::clogit`` parity)
+    for stratum-matched binary data: within each matched set (stratum) the
+    stratum-level intercept is conditioned out, so only within-stratum contrasts
+    of the covariates identify the coefficients. This is the estimator for 1:M
+    matched case-control designs and panel binary FE logit.
+
+    The numeric work is delegated to the parity-gated port
+    ``external.pysurvival.clogit(y, strata, X)``; we report each log-odds
+    coefficient with its SE, z, p and the odds ratio ``exp(β)``.
+
+    kwargs
+    ------
+    outcome : str
+        0/1 case indicator column. Default: ``variables['outcome']``.
+    strata : str
+        Matched-set / stratum id column. Default ``kwargs['strata']`` →
+        ``design['panel_id']`` → ``"strata"``.
+    covariates : list[str]
+        Covariates. Default: numeric columns other than outcome / strata.
+    """
+    df = _get_datasets(state, kwargs)
+
+    def _empty(note: str) -> StudyState:
+        state.write("models", "clogit", {
+            "coef": {}, "odds_ratio": {}, "strata": None,
+            "n": 0, "n_events": 0, "note": note,
+        })
+        return state
+
+    if df is None:
+        return _empty("缺少数据(sources['datasets']),无法拟合条件 Logit")
+
+    strata_col = kwargs.get("strata") or state.design.get("panel_id") or "strata"
+    if strata_col not in df.columns:
+        return _empty(f"缺少分层列(strata='{strata_col}')")
+
+    outcome = _pick_outcome(df, kwargs, state, exclude=[strata_col])
+    if outcome is None:
+        return _empty("找不到结果变量(outcome)")
+    if outcome == strata_col:
+        return _empty(f"outcome 与 strata 不能是同一列('{outcome}')")
+
+    covariates = list(kwargs.get("covariates") or [])
+    if not covariates:
+        covariates = [
+            c for c in df.columns
+            if c not in (outcome, strata_col) and pd.api.types.is_numeric_dtype(df[c])
+        ]
+    covariates = [c for c in covariates if c in df.columns and c != outcome
+                  and c != strata_col]
+    if not covariates:
+        return _empty("没有可用协变量")
+
+    work = df[[outcome, strata_col] + covariates].copy().dropna()
+    if work.empty:
+        return _empty("有效样本为空(缺失值过滤后)")
+
+    try:
+        from ..external.pysurvival import clogit as _clogit
+
+        y = work[outcome].to_numpy(dtype=float)
+        strata = work[strata_col].to_numpy()
+        X = work[covariates].to_numpy(dtype=float)
+        rc = _clogit(y, strata, X)
+
+        coef: dict[str, tuple[float, float, float, float]] = {}
+        for i, name in enumerate(covariates):
+            coef[name] = (float(rc.coef[i]), float(rc.se[i]),
+                          float(rc.z[i]), float(rc.pval[i]))
+        odds_ratio = {k: float(np.exp(v[0])) for k, v in coef.items()}
+        ll0, ll_fit = rc.loglik
+    except Exception as exc:  # pragma: no cover
+        return _empty(f"条件 Logit 拟合失败: {exc!s}")
+
+    state.write("models", "clogit", {
+        "coef": coef,
+        "odds_ratio": odds_ratio,
+        "covariates": covariates,
+        "outcome": outcome,
+        "strata": strata_col,
+        "n": int(rc.n),
+        "n_events": int(rc.n_event),
+        "n_strata": int(work[strata_col].nunique()),
+        "loglik_null": float(ll0),
+        "loglik_fitted": float(ll_fit),
+        "iterations": int(rc.iter),
+        "estimator": "pysurvival clogit(精确条件似然, survival::clogit parity)",
+        "note": "coef = 条件对数优势比(层内固定效应已消除);OR = exp(coef)",
+    })
+    return state
+
+
+# ------------------------------------------------------------------- aft_survreg
+@register(
+    name="aft_survreg",
+    aliases=["参数生存", "AFT", "加速失效时间", "survreg"],
+    category="longitudinal",
+    tier="plus",
+    skill="(参数AFT 缺口)",
+    languages=["Python"],
+    key_tools=["pysurvival"],
+    description="参数加速失效时间(AFT)生存回归:Weibull/指数/对数正态 MLE(survreg),对数时间尺度系数",
+    requires={"sources": ["datasets"], "variables": ["outcome"]},
+    produces={"models": ["survreg"]},
+    auto_fix="escalate",
+)
+def aft_survreg(state: StudyState, **kwargs: Any) -> StudyState:
+    """Parametric accelerated-failure-time (AFT) survival regression — ``survreg``.
+
+    Fits a fully parametric AFT model of ``log(time)`` on the covariates with a
+    parametric error distribution (extreme-value → Weibull/exponential, Gaussian
+    → lognormal), by exact-likelihood Newton-Raphson. Coefficients are on the
+    log-time scale: a positive β lengthens survival (time-ratio ``exp(β)``),
+    the opposite sign convention from a Cox log-HR.
+
+    The numeric work is delegated to the parity-gated port
+    ``external.pysurvival.survreg(time, status, X, dist)``; an intercept column
+    is prepended to the design (matching R's ``~ covariates`` model matrix).
+
+    kwargs
+    ------
+    time : str
+        Duration column. Default ``kwargs['time']`` → ``kwargs['duration']`` →
+        ``design['duration']`` → ``"time"``.
+    event : str
+        Event indicator (1 = observed, 0 = censored). Default
+        ``variables['outcome']`` → ``"event"``.
+    covariates : list[str]
+        Covariates. Default: numeric columns other than time / event.
+    dist : str
+        ``"weibull"`` (default), ``"exponential"`` or ``"lognormal"``.
+    """
+    df = _get_datasets(state, kwargs)
+    dist = str(kwargs.get("dist") or "weibull").lower()
+
+    def _empty(note: str) -> StudyState:
+        state.write("models", "survreg", {
+            "coef": {}, "time_ratio": {}, "scale": None, "dist": dist,
+            "n": 0, "n_events": 0, "note": note,
+        })
+        return state
+
+    if df is None:
+        return _empty("缺少数据(sources['datasets']),无法拟合参数 AFT 模型")
+    if dist not in ("weibull", "exponential", "lognormal"):
+        return _empty(f"不支持的分布 dist='{dist}'(可选 weibull/exponential/lognormal)")
+
+    time_col = kwargs.get("time") or kwargs.get("duration") or "time"
+    event_col = kwargs.get("event") or state.variables.get("outcome") or "event"
+    if time_col not in df.columns and state.design.get("duration") in df.columns:
+        time_col = state.design.get("duration")
+    if time_col == event_col:
+        return _empty(
+            f"time 与 event 不能是同一列('{time_col}')— 用 time=/duration= 指定生存时间、"
+            f"event= 或 variables['outcome'] 指定事件指示"
+        )
+    if time_col not in df.columns or event_col not in df.columns:
+        return _empty(f"缺少生存列(time='{time_col}' / event='{event_col}')")
+
+    covariates = list(kwargs.get("covariates") or [])
+    if not covariates:
+        covariates = [
+            c for c in df.columns
+            if c not in (time_col, event_col) and pd.api.types.is_numeric_dtype(df[c])
+        ]
+    covariates = [c for c in covariates if c in df.columns
+                  and c not in (time_col, event_col)]
+
+    work = df[[time_col, event_col] + covariates].copy().dropna()
+    work = work[work[time_col] > 0]
+    if work.empty:
+        return _empty("有效生存时间为空(time <= 0 或缺失值过滤后)")
+
+    try:
+        from ..external.pysurvival import survreg as _survreg
+
+        dur = work[time_col].to_numpy(dtype=float)
+        status = work[event_col].to_numpy(dtype=float)
+        # prepend an intercept column (R's ~ covariates design matrix)
+        cols = [np.ones(len(work))] + [work[c].to_numpy(dtype=float) for c in covariates]
+        X = np.column_stack(cols)
+        names = ["Intercept"] + list(covariates)
+        rs = _survreg(dur, status, X, dist=dist)
+
+        coef: dict[str, tuple[float, float]] = {}
+        se = np.asarray(rs.se, dtype=float)
+        for i, name in enumerate(names):
+            s = float(se[i]) if i < len(se) else float("nan")
+            coef[name] = (float(rs.coef[i]), s)
+        # time ratio exp(β) for the non-intercept covariates
+        time_ratio = {name: float(np.exp(coef[name][0])) for name in covariates}
+        log_scale_se = float(se[len(names)]) if len(se) > len(names) else None
+    except Exception as exc:  # pragma: no cover
+        return _empty(f"参数 AFT 拟合失败: {exc!s}")
+
+    state.write("models", "survreg", {
+        "coef": coef,
+        "time_ratio": time_ratio,
+        "scale": float(rs.scale),
+        "log_scale_se": log_scale_se,
+        "dist": rs.dist,
+        "covariates": covariates,
+        "time": time_col,
+        "event": event_col,
+        "n": int(len(work)),
+        "n_events": int(status.sum()),
+        "loglik": float(rs.loglik),
+        "iterations": int(rs.iter),
+        "estimator": f"pysurvival survreg({rs.dist}, AFT MLE, survival::survreg parity)",
+        "note": "coef 为对数时间尺度回归系数(正号=生存延长);time_ratio = exp(coef);scale = 尺度参数",
+    })
+    return state
