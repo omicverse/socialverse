@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120" width="520" height="120" role="img" aria-label="socialverse">
+  <defs>
+    <linearGradient id="sv-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f8cff"/>
+      <stop offset="1" stop-color="#22b8a6"/>
+    </linearGradient>
+  </defs>
+  <!-- network glyph: 5 nodes, connected -->
+  <g fill="none" stroke="url(#sv-g)" stroke-width="4">
+    <line x1="30" y1="34" x2="86" y2="22"/>
+    <line x1="30" y1="34" x2="24" y2="88"/>
+    <line x1="30" y1="34" x2="76" y2="66"/>
+    <line x1="86" y1="22" x2="76" y2="66"/>
+    <line x1="76" y1="66" x2="24" y2="88"/>
+    <line x1="76" y1="66" x2="98" y2="98"/>
+  </g>
+  <g fill="url(#sv-g)">
+    <circle cx="30" cy="34" r="10"/>
+    <circle cx="86" cy="22" r="8"/>
+    <circle cx="76" cy="66" r="11"/>
+    <circle cx="24" cy="88" r="8"/>
+    <circle cx="98" cy="98" r="7"/>
+  </g>
+  <!-- wordmark -->
+  <text x="132" y="74" font-family="'DejaVu Sans','Helvetica Neue',Arial,sans-serif" font-size="52" font-weight="700" fill="#7488a8">social<tspan fill="url(#sv-g)">verse</tspan></text>
+</svg>

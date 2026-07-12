@@ -1,0 +1,58 @@
+/* socialverse — brand overrides for sphinx-book-theme / pydata-sphinx-theme.
+   Blue → teal, keyed to the logo gradient. */
+
+html[data-theme="light"] {
+  --pst-color-primary:        #3f6fd6;
+  --pst-color-primary-bg:     #e7eefc;
+  --pst-color-secondary:      #16a394;
+  --pst-color-secondary-bg:   #dff5f1;
+  --pst-color-accent:         #16a394;
+  --pst-color-link:           #3f6fd6;
+  --pst-color-link-hover:     #16a394;
+  --pst-color-inline-code:    #b8478f;
+  --pst-color-target:         #fff6d6;
+}
+
+html[data-theme="dark"] {
+  --pst-color-primary:        #6ea8ff;
+  --pst-color-primary-bg:     #16233f;
+  --pst-color-secondary:      #22b8a6;
+  --pst-color-secondary-bg:   #10312c;
+  --pst-color-accent:         #22b8a6;
+  --pst-color-link:           #6ea8ff;
+  --pst-color-link-hover:     #22b8a6;
+  --pst-color-inline-code:    #ff9ecb;
+}
+
+/* Sidebar logo — give it a little breathing room */
+.navbar-brand img,
+.sidebar-primary-item .navbar-brand img {
+  max-width: 220px;
+  margin: 0.4rem 0 0.2rem;
+}
+
+/* Landing card grid (sphinx-design) — subtle lift + brand top border */
+.bd-content .sd-card {
+  border: 1px solid var(--pst-color-border);
+  border-top: 3px solid var(--pst-color-primary);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.bd-content .sd-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(63, 111, 214, 0.15);
+}
+.bd-content .sd-card-title {
+  font-weight: 650;
+  color: var(--pst-color-primary);
+}
+
+/* Tutorial R↔Python dictionary tables — keep code cells from wrapping */
+.bd-content table td code,
+.bd-content table th code {
+  white-space: nowrap;
+}
+
+/* Tighten the announcement bar so it reads as a slim ribbon */
+.bd-header-announcement {
+  font-size: 0.82rem;
+}

@@ -15,3 +15,6 @@ notebooks/evidence_chain_provenance.json
 /fig_*.png
 /*.tei.xml
 /*.docx
+
+# Sphinx docs build output
+docs/_build/
