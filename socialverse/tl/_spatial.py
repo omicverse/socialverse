@@ -39,7 +39,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["spatial_autocorr", "spatial_regression"]
+__all__ = ["spatial_autocorr", "spatial_regression", "spatial_history"]
 
 _SEED = 0
 
@@ -535,3 +535,321 @@ def _spreg_w(W: np.ndarray):
     wobj = libpysal.weights.full2W(W)
     wobj.transform = "r"
     return wobj
+
+
+# ============================================================================
+# spatial_history — the spatial-TEMPORAL summary that makes a "historical map"
+# mean something. A drawing of dots answers "where"; this answers "how did the
+# pattern MOVE and SPREAD over time". It is the Historical-Map tool's single
+# inference entrypoint (the survey_crosstab analog): given events with
+# coordinates + a time column, it bins time and returns, per period, the
+# weighted CENTER OF GRAVITY, its migration path (haversine km + bearing), the
+# spatial DISPERSION (standard distance), the EXTENT (diameter), and — when a
+# magnitude column is given and n allows — the per-period Moran's I clustering.
+# ============================================================================
+_R_KM = 6371.0088  # mean Earth radius (km)
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    la1, lo1, la2, lo2 = map(np.radians, (lat1, lon1, lat2, lon2))
+    d = np.sin((la2 - la1) / 2) ** 2 + np.cos(la1) * np.cos(la2) * np.sin((lo2 - lo1) / 2) ** 2
+    return 2 * _R_KM * np.arcsin(np.sqrt(np.clip(d, 0.0, 1.0)))
+
+
+def _spherical_mean(lat, lon, w=None):
+    """Weighted mean center on the sphere via 3-D unit-vector averaging.
+
+    Correct across the antimeridian and at high latitude (a naive mean of
+    longitude is not). Returns ``(mean_lat, mean_lon)`` in degrees.
+    """
+    lat = np.radians(np.asarray(lat, float))
+    lon = np.radians(np.asarray(lon, float))
+    w = np.ones_like(lat) if w is None else np.asarray(w, float)
+    x = (w * np.cos(lat) * np.cos(lon)).sum()
+    y = (w * np.cos(lat) * np.sin(lon)).sum()
+    z = (w * np.sin(lat)).sum()
+    return float(np.degrees(np.arctan2(z, np.hypot(x, y)))), float(np.degrees(np.arctan2(y, x)))
+
+
+def _standard_distance_km(lat, lon, clat, clon, w=None):
+    """Weighted RMS haversine distance of points from the center (a spatial 'SD')."""
+    d = _haversine_km(np.asarray(lat, float), np.asarray(lon, float), clat, clon)
+    if w is None:
+        return float(np.sqrt((d ** 2).mean()))
+    w = np.asarray(w, float)
+    sw = w.sum()
+    return float(np.sqrt((w * d ** 2).sum() / sw)) if sw > 0 else float(np.sqrt((d ** 2).mean()))
+
+
+def _compass(lat1, lon1, lat2, lon2) -> str:
+    """8-point compass name for the initial bearing point1 → point2."""
+    la1, la2 = np.radians(lat1), np.radians(lat2)
+    dlon = np.radians(lon2 - lon1)
+    x = np.sin(dlon) * np.cos(la2)
+    y = np.cos(la1) * np.sin(la2) - np.sin(la1) * np.cos(la2) * np.cos(dlon)
+    brg = (np.degrees(np.arctan2(x, y)) + 360.0) % 360.0
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][int((brg + 22.5) % 360 // 45)]
+
+
+def _bootstrap_center_km(la, lo, w, B: int, rng) -> float | None:
+    """95th-pct great-circle distance of resampled weighted centers from the point
+    estimate — a bootstrap uncertainty radius (km) on a period's center of gravity.
+
+    Resamples the recorded points uniformly with replacement (the sampling model is
+    "which events happened to be recorded") and recomputes the WEIGHTED center; the
+    spread of those centers is the honest uncertainty a raw centroid hides.
+    """
+    n = len(la)
+    if n < 3:
+        return None
+    clat, clon = _spherical_mean(la, lo, w)
+    d = np.empty(B)
+    for b in range(B):
+        idx = rng.integers(0, n, n)
+        bclat, bclon = _spherical_mean(la[idx], lo[idx], (w[idx] if w is not None else None))
+        d[b] = _haversine_km(clat, clon, bclat, bclon)
+    return float(np.percentile(d, 95))
+
+
+def _perm_displacement_p(laA, loA, wA, laB, loB, wB, obs: float, B: int, rng) -> float:
+    """Permutation p-value that a center genuinely MOVED between two periods.
+
+    Pools the two periods' points, repeatedly re-splits them into groups of the same
+    two sizes, and recomputes the between-center displacement. p = fraction of
+    permuted displacements >= observed. Low p ⇒ the shift is larger than what
+    reshuffling which points fell in which period would produce (i.e. real movement,
+    not a recording artifact) — the survey-crosstab move for a trajectory.
+    """
+    la = np.concatenate([laA, laB]); lo = np.concatenate([loA, loB])
+    w = np.concatenate([wA, wB]) if (wA is not None and wB is not None) else None
+    nA, n = len(laA), len(la)
+    if nA < 2 or (n - nA) < 2:
+        return float("nan")
+    extreme = 0
+    for _ in range(B):
+        perm = rng.permutation(n)
+        iA, iB = perm[:nA], perm[nA:]
+        cA = _spherical_mean(la[iA], lo[iA], (w[iA] if w is not None else None))
+        cB = _spherical_mean(la[iB], lo[iB], (w[iB] if w is not None else None))
+        if _haversine_km(cA[0], cA[1], cB[0], cB[1]) >= obs:
+            extreme += 1
+    return (extreme + 1) / (B + 1)
+
+
+def _resolve_coord_cols(df: pd.DataFrame, kwargs: dict) -> tuple[str | None, str | None]:
+    """Find the latitude/longitude columns (explicit kwargs, else common names)."""
+    cols = {c.lower(): c for c in df.columns}
+    lat = kwargs.get("lat") or kwargs.get("latitude")
+    lon = kwargs.get("lon") or kwargs.get("lng") or kwargs.get("longitude")
+    if lat and lon:
+        return (lat if lat in df.columns else None, lon if lon in df.columns else None)
+    for a in ("lat", "latitude", "纬度", "y", "y_coord"):
+        if a in cols:
+            lat = cols[a]; break
+    for b in ("lon", "lng", "long", "longitude", "经度", "x", "x_coord"):
+        if b in cols:
+            lon = cols[b]; break
+    return lat, lon
+
+
+@register(
+    name="spatial_history",
+    aliases=["历史地图分析", "时空重心", "spatiotemporal", "map_diffusion", "重心迁移", "时空分析"],
+    category="spatial",
+    tier="plus",
+    skill="spatial-analysis",
+    languages=["Python"],
+    key_tools=["numpy"],
+    description="时空分析:按时段算加权重心(重力中心)+ 迁移路径(km/方位)+ 空间离散度 + 每期聚集(Moran)",
+    requires={},   # the Historical-Map tool passes data + columns via kwargs; validated in-body
+    produces={"models": ["spatial_history"], "artifacts": ["trajectory"]},
+    auto_fix="escalate",
+)
+def spatial_history(state: StudyState, **kwargs: Any) -> StudyState:
+    """Spatial-temporal summary of georeferenced events for the Historical-Map tool.
+
+    Bins the ``time`` column and, per period, computes the weighted **mean center**
+    (spherical 3-D average, weighted by ``value=`` if given), the **standard
+    distance** (weighted RMS haversine distance from the center — spatial spread in
+    km), the **extent** (max pairwise distance / diameter, km), and — when a
+    ``value`` column is present and the period has enough points — the per-period
+    **Moran's I** (does the magnitude cluster in that period). Across periods it
+    returns the **trajectory** of centers and the **migration** (path length, net
+    displacement, compass bearing) — i.e. how the phenomenon's center of gravity
+    moved and how its footprint spread over time.
+
+    Columns: ``lat``/``lon`` (else auto-detected), ``time`` (year/period),
+    optional ``value`` (magnitude → weights the center + enables Moran), optional
+    ``label`` (kept on points for provenance), optional ``bins`` (# equal-width
+    time bins; else one bin per distinct time value). Writes
+    ``models['spatial_history']``. Never raises — returns an ``error`` field.
+    """
+    result: dict[str, Any] = {"backend": "numpy"}
+    try:
+        df = _get_frame(state, kwargs)
+        if df is None or df.empty:
+            result["error"] = "无地理数据(需要含经纬度与时间列的表)"
+            state.write("models", "spatial_history", result)
+            return state
+
+        lat, lon = _resolve_coord_cols(df, kwargs)
+        tcol = kwargs.get("time") or kwargs.get("year") or kwargs.get("date") or kwargs.get("period")
+        if not lat or not lon:
+            result["error"] = "没找到经纬度列(需要 lat/lon 这类列)"
+            state.write("models", "spatial_history", result)
+            return state
+
+        d = df.copy()
+        d["_lat"] = pd.to_numeric(d[lat], errors="coerce")
+        d["_lon"] = pd.to_numeric(d[lon], errors="coerce")
+        has_time = bool(tcol) and tcol in d.columns
+        d["_t"] = pd.to_numeric(d[tcol], errors="coerce") if has_time else 0.0
+        sub_needed = ["_lat", "_lon"] + (["_t"] if has_time else [])
+        d = d.dropna(subset=sub_needed).reset_index(drop=True)
+        if d.empty:
+            result["error"] = "经纬度/时间列没有可用的数值"
+            state.write("models", "spatial_history", result)
+            return state
+
+        vcol = kwargs.get("value") or kwargs.get("weight") or kwargs.get("magnitude")
+        w_all = pd.to_numeric(d[vcol], errors="coerce").to_numpy() if vcol and vcol in d.columns else None
+        if w_all is not None:
+            w_all = np.where(np.isfinite(w_all) & (w_all > 0), w_all, np.nan)
+
+        # ---- time binning ----------------------------------------------------
+        tvals = d["_t"].to_numpy(dtype=float)
+        bins = kwargs.get("bins")
+        if has_time and bins and int(bins) > 1 and tvals.max() > tvals.min():
+            nb = int(bins)
+            edges = np.linspace(tvals.min(), tvals.max(), nb + 1)
+            idx = np.clip(np.digitize(tvals, edges[1:-1]), 0, nb - 1)
+            labels = [f"{edges[i]:.0f}–{edges[i+1]:.0f}" for i in range(nb)]
+            d["_period"] = [labels[i] for i in idx]
+            order = labels
+        elif has_time:
+            d["_period"] = [f"{v:g}" for v in tvals]
+            order = [f"{v:g}" for v in sorted(pd.unique(tvals))]
+        else:
+            d["_period"] = "all"
+            order = ["all"]
+
+        # ---- per-period stats ------------------------------------------------
+        permutations = int(kwargs.get("permutations", 999))
+        rng = np.random.default_rng(int(kwargs.get("seed", _SEED)))
+        B_boot = int(kwargs.get("bootstrap", 300))
+        periods: list[dict[str, Any]] = []
+        _pts: list[tuple] = []  # per-period (la, lo, sw) for the migration inference
+        for p in order:
+            sub = d[d["_period"] == p]
+            if sub.empty:
+                continue
+            la = sub["_lat"].to_numpy(); lo = sub["_lon"].to_numpy()
+            sw = None
+            if w_all is not None:
+                sw = w_all[sub.index.to_numpy()]
+                if not np.any(np.isfinite(sw)) or np.nansum(sw) <= 0:
+                    sw = None
+                else:
+                    sw = np.where(np.isfinite(sw), sw, 0.0)
+            clat, clon = _spherical_mean(la, lo, sw)
+            sd = _standard_distance_km(la, lo, clat, clon, sw) if len(la) >= 2 else 0.0
+            if 2 <= len(la) <= 400:
+                ii, jj = np.triu_indices(len(la), 1)
+                diam = float(_haversine_km(la[ii], lo[ii], la[jj], lo[jj]).max())
+            else:
+                diam = None
+            rec = {
+                "period": str(p), "n": int(len(sub)),
+                "mean_lat": round(clat, 4), "mean_lon": round(clon, 4),
+                "dispersion_km": round(sd, 1),
+                "extent_km": round(diam, 1) if diam is not None else None,
+                "sum_w": round(float(np.nansum(sw)), 2) if sw is not None else None,
+                "center_ci_km": _bootstrap_center_km(la, lo, sw, B_boot, rng),
+            }
+            _pts.append((la, lo, sw))
+            # per-period Moran's I on the magnitude (does the value cluster?)
+            if sw is not None and len(la) >= 6:
+                try:
+                    coords = np.column_stack([la, lo])
+                    Wm = _knn_W(coords, k=min(4, len(la) - 1))
+                    yv = sw.astype(float)
+                    z = yv - yv.mean()
+                    if float(z @ z) > 0:
+                        I, _zc = _global_moran(z, Wm)
+                        pI = _perm_pvalue(z, Wm, I, min(permutations, 499), rng)
+                        rec["moran_I"] = round(float(I), 3)
+                        rec["moran_p"] = round(float(pI), 3)
+                        rec["clustered"] = bool(pI < 0.05 and I > 0)
+                except Exception:
+                    pass
+            periods.append(rec)
+
+        # ---- trajectory + migration -----------------------------------------
+        traj = [{"period": pp["period"], "lat": pp["mean_lat"], "lon": pp["mean_lon"]} for pp in periods]
+        steps, path = [], 0.0
+        for a, b in zip(traj, traj[1:]):
+            seg = float(_haversine_km(a["lat"], a["lon"], b["lat"], b["lon"]))
+            path += seg
+            steps.append(round(seg, 1))
+        net, bearing = 0.0, "-"
+        p_move: float = float("nan")
+        sig_move = None
+        if len(traj) >= 2:
+            net = float(_haversine_km(traj[0]["lat"], traj[0]["lon"], traj[-1]["lat"], traj[-1]["lon"]))
+            bearing = _compass(traj[0]["lat"], traj[0]["lon"], traj[-1]["lat"], traj[-1]["lon"])
+            # inference: did the center REALLY move (first→last), or is it a recording
+            # artifact? Permute period labels over the pooled first+last points.
+            (laA, loA, wA), (laB, loB, wB) = _pts[0], _pts[-1]
+            p_move = _perm_displacement_p(laA, loA, wA, laB, loB, wB, net,
+                                          int(kwargs.get("perm_move", 499)), rng)
+            sig_move = (bool(p_move < 0.05) if np.isfinite(p_move) else None)
+
+        # per-point period assignment so the tool renders reliably (no client re-binning)
+        label_col = kwargs.get("label") or next(
+            (c for c in ("place", "name", "label", "地名", "名称", "city") if c in df.columns), None)
+        lbl2idx = {pp["period"]: i for i, pp in enumerate(periods)}
+        cap = 3000
+        pts_out = []
+        for _, row in d.head(cap).iterrows():
+            pts_out.append({
+                "lat": round(float(row["_lat"]), 5), "lon": round(float(row["_lon"]), 5),
+                "period_idx": int(lbl2idx.get(str(row["_period"]), 0)),
+                "t": (float(row["_t"]) if has_time else None),
+                "label": (str(row[label_col]) if label_col and pd.notna(row.get(label_col)) else None),
+                "value": (float(row[vcol]) if (vcol and vcol in d.columns and pd.notna(row.get(vcol))) else None),
+            })
+
+        # overall center + bounding box
+        oclat, oclon = _spherical_mean(d["_lat"].to_numpy(), d["_lon"].to_numpy(),
+                                       w_all if w_all is not None else None)
+        result.update({
+            "lat_col": lat, "lon_col": lon, "time_col": tcol if has_time else None,
+            "value_col": vcol if (vcol and vcol in d.columns) else None,
+            "weighted": w_all is not None,
+            "has_time": has_time,
+            "n": int(len(d)), "n_periods": len(periods),
+            "periods": periods,
+            "trajectory": traj,
+            "points": pts_out,
+            "points_truncated": bool(len(d) > cap),
+            "migration": {
+                "path_length_km": round(path, 1),
+                "net_displacement_km": round(net, 1),
+                "net_bearing": bearing,
+                "steps_km": steps,
+                "p_value": (round(float(p_move), 3) if np.isfinite(p_move) else None),
+                "significant": sig_move,
+            },
+            "overall": {
+                "mean_lat": round(oclat, 4), "mean_lon": round(oclon, 4),
+                "lat_min": round(float(d["_lat"].min()), 4), "lat_max": round(float(d["_lat"].max()), 4),
+                "lon_min": round(float(d["_lon"].min()), 4), "lon_max": round(float(d["_lon"].max()), 4),
+                "t_min": (float(np.nanmin(tvals)) if has_time else None),
+                "t_max": (float(np.nanmax(tvals)) if has_time else None),
+            },
+            "note": "时空重心轨迹:每期加权重心(球面均值)+ 迁移(haversine km/方位)+ 标准距离离散度",
+        })
+    except Exception as exc:  # never dead-end the tool
+        result["error"] = f"spatial_history 未能完成:{exc}"
+    state.write("models", "spatial_history", result)
+    return state
