@@ -56,3 +56,13 @@ html[data-theme="dark"] {
 .bd-header-announcement {
   font-size: 0.82rem;
 }
+
+/* The socialverse logo is navy-on-transparent — it reads on light backgrounds but
+   nearly vanishes on the dark sidebar. Give it a white chip in dark mode so it stays
+   legible in both themes. */
+html[data-theme="dark"] .navbar-brand.logo img.logo__image {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.navbar-brand.logo img.logo__image { max-height: 64px; width: auto; }
