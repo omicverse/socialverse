@@ -41,7 +41,7 @@ Issues = "https://github.com/omicverse/socialverse/issues"
 # federated analysis backends — installed only for the chains you use (lazy-imported)
 stats = ["statsmodels>=0.13", "scipy>=1.9", "scikit-learn>=1.0"]
 causal = ["linearmodels>=4.27", "pyfixest>=0.18", "scikit-learn>=1.0"]
-survey = ["samplics>=0.3", "pingouin>=0.5", "factor_analyzer>=0.4"]
+survey = ["scipy>=1.9", "samplics>=0.3", "pingouin>=0.5", "factor_analyzer>=0.4"]
 text = ["spacy>=3.4", "lxml>=4.9"]
 net = ["networkx>=2.8"]
 figure = ["matplotlib>=3.5", "seaborn>=0.12"]
