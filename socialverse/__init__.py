@@ -37,7 +37,7 @@ from ._slots import SLOTS, VALID_SLOTS  # noqa: F401
 from ._state import StudyState  # noqa: F401
 from ._style import plot_set, resolve_publication_font, style  # noqa: F401
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 
 # Import submodules for their side effect: each module's @register calls populate
 # the singleton registry. Wrapped in a guard so a missing optional dep in one
