@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "socialverse"
-version = "0.7.2"
+version = "0.7.3"
 description = "A structured, dependency-annotated function registry for the social sciences and humanities — the omicverse registry mechanism, ported off AnnData onto a light StudyState vocabulary."
 readme = "README.md"
 requires-python = ">=3.10"
