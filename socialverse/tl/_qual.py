@@ -39,7 +39,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["code_themes", "trace_quotes", "reflexive_memo"]
+__all__ = ["code_themes", "trace_quotes", "reflexive_memo", "code_analysis"]
 
 
 def _try_import(name: str) -> Any | None:
@@ -458,6 +458,178 @@ def trace_quotes(state: StudyState, **kwargs: Any) -> StudyState:
     }
 
     state.write("evidence", "quote_index", quote_index)
+    return state
+
+
+# ------------------------------------------------------------- CAQDAS content analysis
+@register(
+    name="code_analysis",
+    aliases=["编码分析", "caqdas_analysis", "code_index"],
+    category="qual",
+    tier="plus",
+    skill="qualitative-coding",
+    languages=["Python"],
+    key_tools=["pandas", "networkx"],
+    description="从已编码片段做 CAQDAS 内容分析:代码×文档矩阵/频次/共现/编码累积曲线 + 引文核验(不重新编码)",
+    requires={},
+    produces={
+        "codes": ["codebook", "segments", "theme_map"],
+        "diagnostics": ["code_matrix", "code_frequency", "saturation", "coverage"],
+        "evidence": ["quote_index"],
+    },
+    auto_fix="none",
+)
+def code_analysis(state: StudyState, **kwargs: Any) -> StudyState:
+    """CAQDAS content-analysis + provenance over **already-coded** segments.
+
+    Distinct from :func:`code_themes` (which *applies a lexicon to discover* codes):
+    this takes segments an analyst/agent has *already* coded and computes the
+    descriptive layer of computer-assisted qualitative analysis **without
+    re-coding** — deliberately paradigm-NEUTRAL (these are content-analysis
+    operations; they make no thematic/grounded-theory claim):
+
+      * a **code × document** matrix + code **frequency**;
+      * a code **co-occurrence** graph (``theme_map``: codes sharing a document);
+      * a code-**accumulation** curve over document order — how many *new* codes each
+        added document introduces. This is a descriptive coverage curve, explicitly
+        NOT a claim of theoretical saturation (which is a paradigm-committed concept
+        the caller must not assert on the analyst's behalf);
+      * **quote verification** — slice each segment's offsets back out of the source
+        document and confirm the quote matches (delegates to :func:`trace_quotes`).
+
+    This is the SINGLE contract-checked entrypoint the interactive Coding tool and
+    the methodology skill both call, so the two paths cannot compute divergent
+    results and both survive socialverse version drift.
+
+    Parameters (via ``kwargs``)
+    ---------------------------
+    segments : list[dict]
+        Already-coded segments, each ``{doc_id, code, quote, start, end}``
+        (``start``/``end`` = character offsets in that document's text). Falls back
+        to ``state.codes['segments']``.
+    documents : dict, optional
+        ``{doc_id: text}`` — for quote slice-back verification and the accumulation
+        curve's document order. Falls back to ``state.corpus['documents']``.
+    doc_order : list, optional
+        Explicit document order for the accumulation curve.
+    """
+    from collections import Counter as _Counter
+
+    raw_segs = kwargs.get("segments")
+    if raw_segs is None:
+        raw_segs = state.codes.get("segments") or []
+    documents = kwargs.get("documents") or state.corpus.get("documents") or {}
+
+    # normalize to the canonical segment shape (a synthetic unit_id per span)
+    segs: list[dict[str, Any]] = []
+    for s in raw_segs:
+        if not isinstance(s, dict):
+            continue
+        code = str(s.get("code", "")).strip()
+        if not code:
+            continue
+        doc_id = str(s.get("doc_id", ""))
+        quote = str(s.get("quote", s.get("text", "")))
+        start, end = s.get("start"), s.get("end")
+        # unit = the document (coarse but honest); verification uses the segment's
+        # own char offsets against the document text, independent of unit grain.
+        segs.append({
+            "unit_id": doc_id,
+            "doc_id": doc_id, "code": code,
+            "start": start, "end": end, "text": quote,
+        })
+
+    if documents:
+        state.write("corpus", "documents", dict(documents))
+        # seed document-level units so trace_quotes' `requires: corpus.units`
+        # contract is satisfied (and unit_coverage = share of documents coded)
+        if not state.corpus.get("units"):
+            state.write("corpus", "units", [
+                {"unit_id": did, "doc_id": did, "start": 0,
+                 "end": len(str(txt)), "text": str(txt)}
+                for did, txt in documents.items()
+            ])
+
+    # --- codebook (code -> count) --------------------------------------------
+    cnt = _Counter(s["code"] for s in segs)
+    codes = list(cnt.keys())
+    codebook = pd.DataFrame(
+        [{"code": c, "count": int(n)} for c, n in cnt.most_common()],
+        columns=["code", "count"],
+    )
+    state.write("codes", "segments", segs)
+    state.write("codes", "codebook", codebook)
+
+    # --- code x document matrix + frequency ----------------------------------
+    doc_ids = list(dict.fromkeys(
+        kwargs.get("doc_order") or list(documents.keys()) or [s["doc_id"] for s in segs]
+    ))
+    mat = pd.DataFrame(0, index=codes, columns=doc_ids, dtype=int)
+    for s in segs:
+        if s["doc_id"] in mat.columns and s["code"] in mat.index:
+            mat.at[s["code"], s["doc_id"]] += 1
+    code_matrix = mat.reset_index().rename(columns={"index": "code"})
+    state.write("diagnostics", "code_matrix", code_matrix)
+    state.write("diagnostics", "code_frequency", codebook.copy())
+
+    # --- code co-occurrence (codes sharing a document) -> theme_map ----------
+    by_doc: dict[str, set] = {}
+    for s in segs:
+        by_doc.setdefault(s["doc_id"], set()).add(s["code"])
+    cooc: _Counter = _Counter()
+    for cs in by_doc.values():
+        ordered = sorted(cs)
+        for i in range(len(ordered)):
+            for j in range(i + 1, len(ordered)):
+                cooc[(ordered[i], ordered[j])] += 1
+    nx = _try_import("networkx")
+    if nx is not None:
+        g = nx.Graph()
+        g.add_nodes_from((c, {"count": int(cnt[c])}) for c in codes)
+        for (a, b), w in cooc.items():
+            g.add_edge(a, b, weight=int(w))
+        adjacency = {n: {nb: int(d.get("weight", 1)) for nb, d in g.adj[n].items()} for n in g.nodes}
+        density = float(nx.density(g)) if g.number_of_nodes() > 1 else 0.0
+        theme_map = {"nodes": codes, "adjacency": adjacency,
+                     "n_edges": g.number_of_edges(), "density": round(density, 4)}
+    else:
+        adjacency = {c: {} for c in codes}
+        for (a, b), w in cooc.items():
+            adjacency[a][b] = int(w)
+            adjacency[b][a] = int(w)
+        theme_map = {"nodes": codes, "adjacency": adjacency, "n_edges": len(cooc), "density": 0.0}
+    state.write("codes", "theme_map", theme_map)
+
+    # --- code-accumulation curve over document order (NOT saturation) --------
+    seen: set = set()
+    rows = []
+    for i, did in enumerate(doc_ids, 1):
+        dcodes = by_doc.get(did, set())
+        new = dcodes - seen
+        seen |= dcodes
+        rows.append({"documents": i, "doc_id": did,
+                     "unique_codes": len(seen), "new_codes": len(new)})
+    saturation = pd.DataFrame(rows, columns=["documents", "doc_id", "unique_codes", "new_codes"])
+    state.write("diagnostics", "saturation", saturation)
+
+    # --- quote verification (best-effort) ------------------------------------
+    coverage: dict[str, Any] = {
+        "n_documents": len(doc_ids),
+        "n_documents_coded": len(by_doc),
+        "doc_coverage": round(len(by_doc) / len(doc_ids), 4) if doc_ids else 0.0,
+    }
+    try:
+        trace_quotes(state, documents=documents)
+        qi = state.evidence.get("quote_index") or {}
+        cov = qi.get("coverage") or {}
+        coverage.update({
+            "n_verified": cov.get("n_verified"),
+            "n_checkable": cov.get("n_checkable"),
+            "verify_rate": cov.get("verify_rate"),
+        })
+    except Exception as exc:  # pragma: no cover - defensive
+        coverage["verify_error"] = str(exc)
+    state.write("diagnostics", "coverage", coverage)
     return state
 
 
