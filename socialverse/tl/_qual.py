@@ -39,7 +39,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["code_themes", "trace_quotes", "reflexive_memo", "code_analysis"]
+__all__ = ["code_themes", "trace_quotes", "reflexive_memo", "code_analysis", "coding_reliability"]
 
 
 def _try_import(name: str) -> Any | None:
@@ -630,6 +630,135 @@ def code_analysis(state: StudyState, **kwargs: Any) -> StudyState:
     except Exception as exc:  # pragma: no cover - defensive
         coverage["verify_error"] = str(exc)
     state.write("diagnostics", "coverage", coverage)
+    return state
+
+
+# ----------------------------------------------------------- inter-coder reliability
+def _unit_spans(text: str, unit: str) -> list[tuple[int, int]]:
+    """Split ``text`` into (start, end) unit spans (sentence or paragraph)."""
+    text = text or ""
+    spans: list[tuple[int, int]] = []
+    if unit == "paragraph":
+        start = 0
+        for m in re.finditer(r"\n[ \t]*\n", text):
+            end = m.start()
+            if text[start:end].strip():
+                spans.append((start, end))
+            start = m.end()
+        if text[start:].strip():
+            spans.append((start, len(text)))
+    else:  # sentence
+        start = 0
+        for m in re.finditer(r"[.!?。!?！？]+(?:\s+|$)", text):
+            end = m.end()
+            if text[start:end].strip():
+                spans.append((start, end))
+            start = end
+        if start < len(text) and text[start:].strip():
+            spans.append((start, len(text)))
+    return spans or ([(0, len(text))] if text.strip() else [])
+
+
+@register(
+    name="coding_reliability",
+    aliases=["编码者间信度", "intercoder_reliability", "coding_agreement"],
+    category="qual",
+    tier="plus",
+    skill="qualitative-coding",
+    languages=["Python"],
+    key_tools=["pandas", "numpy"],
+    description="两名及以上编码者对同一语料的编码者间信度:投影到单元网格→Cohen/Fleiss κ + Krippendorff α + 百分比一致 + 逐单元分歧",
+    requires={},
+    produces={"diagnostics": ["interrater", "coding_disagreements"], "sources": ["datasets"]},
+    auto_fix="none",
+)
+def coding_reliability(state: StudyState, **kwargs: Any) -> StudyState:
+    """Inter-coder reliability across TWO+ independent codings of the SAME corpus.
+
+    Each coder brings free-span segments ``{doc_id, code, start, end}``. Reliability
+    needs a shared coding UNIT, so this projects every coder onto a common unit grid
+    (sentences by default): each unit gets one nominal label per coder — the code
+    whose span most overlaps it, or ``'∅'`` (uncoded). It then builds the
+    subjects×raters frame and runs :func:`~socialverse.tl.interrater` — percent
+    agreement, Cohen's κ (2 coders), Fleiss' κ (N coders), Krippendorff's α — and
+    audits per-unit disagreements.
+
+    **Paradigm note.** Inter-coder reliability is a **content-analysis / positivist-
+    qualitative** quality criterion. Reflexive thematic analysis (Braun & Clarke)
+    deliberately does NOT use it (the analyst is the instrument). Report it only when
+    the chosen paradigm calls for it.
+
+    kwargs
+    ------
+    coders : dict ``{coder_name: [segment, ...]}`` — two or more coders' segments.
+    documents : dict ``{doc_id: text}`` — the shared corpus (else ``corpus['documents']``).
+    unit : ``'sentence'`` (default) or ``'paragraph'`` — the reliability unit.
+    """
+    coders = kwargs.get("coders") or {}
+    documents = kwargs.get("documents") or state.corpus.get("documents") or {}
+    unit = kwargs.get("unit", "sentence")
+    UNC = "∅"
+
+    if len(coders) < 2:
+        state.write("diagnostics", "interrater", {
+            "note": f"编码者间信度需要 ≥2 名编码者(收到 {len(coders)} 名)",
+            "n_raters": len(coders), "n_subjects": 0,
+        })
+        return state
+
+    coder_names = list(coders.keys())
+    # build the shared unit grid per document
+    units: list[dict[str, Any]] = []
+    for doc_id, text in documents.items():
+        for (us, ue) in _unit_spans(str(text), unit):
+            units.append({"doc_id": str(doc_id), "start": us, "end": ue,
+                          "text": str(text)[us:ue].strip()})
+
+    def _label(segs: list, doc_id: str, us: int, ue: int) -> str:
+        best, best_ov = UNC, 0
+        for s in segs or []:
+            if str(s.get("doc_id", "")) != doc_id:
+                continue
+            ss, se = s.get("start"), s.get("end")
+            if not isinstance(ss, int) or not isinstance(se, int):
+                continue
+            ov = max(0, min(ue, se) - max(us, ss))
+            if ov > best_ov:
+                best_ov, best = ov, str(s.get("code", UNC))
+        return best
+
+    rows = []
+    disagreements = []
+    for u in units:
+        labels = {c: _label(coders[c], u["doc_id"], u["start"], u["end"]) for c in coder_names}
+        row = {"doc_id": u["doc_id"], "unit": u["text"]}
+        row.update({f"rater_{c}": labels[c] for c in coder_names})
+        rows.append(row)
+        if len(set(labels.values())) > 1:
+            disagreements.append({"doc_id": u["doc_id"], "unit": u["text"], **{c: labels[c] for c in coder_names}})
+
+    df = pd.DataFrame(rows)
+    rater_cols = [f"rater_{c}" for c in coder_names]
+    # drop units nobody coded (all ∅) — they only inflate agreement
+    if not df.empty:
+        coded_mask = df[rater_cols].apply(lambda r: any(v != UNC for v in r), axis=1)
+        df_scored = df[coded_mask].reset_index(drop=True)
+    else:
+        df_scored = df
+
+    # delegate the reliability battery to the interrater entrypoint
+    from ._interrater import interrater as _interrater
+    state.write("sources", "datasets", df_scored[rater_cols] if not df_scored.empty else df_scored)
+    _interrater(state, raters=rater_cols)
+    ir = state.diagnostics.get("interrater") or {}
+    ir = dict(ir)
+    ir["coders"] = coder_names
+    ir["unit"] = unit
+    ir["n_units_total"] = len(units)
+    ir["n_units_scored"] = int(len(df_scored))
+    ir["n_disagreements"] = len(disagreements)
+    state.write("diagnostics", "interrater", ir)
+    state.write("diagnostics", "coding_disagreements", disagreements[:200])
     return state
 
 
