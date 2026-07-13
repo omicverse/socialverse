@@ -32,7 +32,7 @@ from .._registry import register
 from .._state import StudyState
 
 __all__ = ["design_survey", "survey_estimate",
-           "survey_by", "survey_ratio", "survey_ciprop"]
+           "survey_by", "survey_ratio", "survey_ciprop", "survey_crosstab"]
 
 
 # --------------------------------------------------------------------- helpers
@@ -646,4 +646,153 @@ def survey_ciprop(state: StudyState, **kwargs: Any) -> StudyState:
         result["error"] = f"survey_ciprop 未能完成:{exc}"
 
     state.write("models", "survey_ciprop", result)
+    return state
+
+
+# --------------------------------------------------------------------- crosstab
+@register(
+    name="survey_crosstab",
+    aliases=["加权交叉表", "survey_pivot", "weighted_crosstab", "design_based_crosstab", "透视表推断"],
+    category="survey",
+    tier="plus",
+    skill="complex-survey-analysis",
+    languages=["Python"],
+    key_tools=["scipy", "numpy", "pandas"],
+    description=(
+        "设计校正的加权交叉表(透视表工具的推断入口):每格 design-based 加权均值/比例 + "
+        "95% 置信区间(svyby 域方差,含分层/PSU)+ 组间差异的 design-based Wald F 检验;"
+        "附未加权敏感性对照与 Kish 有效样本量。把描述性透视表升级成真正的调查估计。"
+    ),
+    requires={},   # the Pivot tool passes data + design via kwargs; validated in-body
+    produces={"models": ["survey_crosstab"], "artifacts": ["tables"]},
+    auto_fix="escalate",
+)
+def survey_crosstab(state: StudyState, **kwargs: Any) -> StudyState:
+    """Design-based weighted cross-tab — the inference layer behind the Pivot tool.
+
+    Turns a *descriptive* weighted crosstab into a real survey estimate: for every
+    ``group`` (× optional ``split``) cell it reports the design-based weighted
+    mean/proportion with a 95% CI (domain variance over the FULL design, i.e. strata
+    + PSUs via :func:`external.pysurvey.svyby`), plus a design-based **Wald F test**
+    for whether the outcome's weighted mean differs across ``group`` (WLS ``y~group``
+    with the survey sandwich variance). A binary 0/1 outcome is reported as a
+    proportion. Also returns the unweighted means as a sensitivity contrast and the
+    Kish effective sample size.
+
+    Parameters (via ``kwargs``)
+    ---------------------------
+    data : DataFrame, optional — the survey frame (overrides ``sources['datasets']``).
+    outcome : str — the measure column (0/1 → proportion; else weighted mean).
+    group : str — the primary grouping (pivot rows).
+    split : str, optional — a secondary grouping (pivot columns).
+    weights / strata / psu / fpc : str, optional — design columns (override ``design``).
+    level : float, optional — CI level (default 95).
+    """
+    from scipy import stats
+
+    data = _resolve_dataset(state, kwargs)
+    outcome = kwargs.get("outcome", state.variables.get("outcome"))
+    group = kwargs.get("group", state.variables.get("group") or state.variables.get("by"))
+    split = kwargs.get("split")
+    level = float(kwargs.get("level", 95.0))
+
+    # explicit design kwargs override state.design (the Pivot tool passes them directly)
+    for k in ("weights", "strata", "psu", "fpc"):
+        if kwargs.get(k):
+            state.write("design", k, kwargs[k])
+
+    result: dict[str, Any] = {
+        "outcome": outcome, "group": group, "split": split, "level": level,
+        "binary": False, "cells": [], "test": None, "design": {}, "unweighted": {},
+        "backend": None, "error": None,
+    }
+    table = pd.DataFrame(columns=["group", "split", "estimate", "ci_lo", "ci_hi", "n"])
+    SEP = "␟"  # unit separator to join group×split levels
+
+    try:
+        if not outcome or outcome not in data.columns:
+            raise ValueError(f"测量列(outcome)‘{outcome}’不在数据里")
+        if not group or group not in data.columns:
+            raise ValueError(f"分组列(group)‘{group}’不在数据里")
+
+        from ..external.pysurvey import svyby
+        from ..external.pysurvey.survey import _vcov_total
+
+        des, w, idx = _design_from_state(state, data, [outcome])
+        yv = pd.to_numeric(data.loc[idx, outcome], errors="coerce").to_numpy(float)
+        gv = data.loc[idx, group].astype(str).to_numpy()
+        sv_ = data.loc[idx, split].astype(str).to_numpy() if (split and split in data.columns) else None
+
+        finite = yv[np.isfinite(yv)]
+        uniq_y = np.unique(finite)
+        is_binary = uniq_y.size <= 2 and set(np.round(uniq_y, 6).tolist()).issubset({0.0, 1.0})
+        result["binary"] = bool(is_binary)
+
+        # per-cell domain estimates (group [× split]); full-design (strata/PSU) variance
+        cell_key = (np.array([f"{g}{SEP}{s}" for g, s in zip(gv, sv_)]) if sv_ is not None else gv)
+        out = svyby(yv, cell_key, des, stat="svymean")
+        df_dom = int(out["df"])
+        crit = float(stats.t.ppf(1 - (1 - level / 100.0) / 2, max(df_dom, 1)))
+        cells = []
+        for lvl, est, se in zip(out["levels"], np.asarray(out["estimate"]).ravel(),
+                                np.asarray(out["se"]).ravel()):
+            lvl = str(lvl)
+            g, s = (lvl.split(SEP, 1) if SEP in lvl else (lvl, None))
+            n_cell = int(np.sum(cell_key == lvl))
+            lo, hi = float(est) - crit * float(se), float(est) + crit * float(se)
+            if is_binary:
+                lo, hi = max(0.0, lo), min(1.0, hi)
+            cells.append({"group": g, "split": s, "estimate": float(est), "se": float(se),
+                          "ci_lo": lo, "ci_hi": hi, "n": n_cell})
+        result["cells"] = cells
+        result["backend"] = "pysurvey"
+
+        # design-based omnibus test: does the weighted mean of outcome differ by group?
+        levels_g = sorted(set(gv.tolist()))
+        if len(levels_g) >= 2:
+            Dg = pd.get_dummies(pd.Series(gv), drop_first=True).to_numpy(float)
+            X = np.hstack([np.ones((len(idx), 1)), Dg])
+            A = X.T @ (w[:, None] * X)
+            beta = np.linalg.solve(A, X.T @ (w * yv))
+            resid = yv - X @ beta
+            Gm = (w * resid)[:, None] * X
+            B = _vcov_total(Gm, des)
+            Ainv = np.linalg.inv(A)
+            V = Ainv @ B @ Ainv
+            q = X.shape[1] - 1
+            bD, VD = beta[1:], V[1:, 1:]
+            wald = float(bD @ np.linalg.solve(VD, bD))
+            dfden = max(int(des.degf) - q + 1, 1)
+            Fstat = wald / q
+            pval = float(stats.f.sf(Fstat, q, dfden))
+            result["test"] = {
+                "method": "design-based Wald F (y~group, survey sandwich)",
+                "stat": float(Fstat), "df_num": int(q), "df_den": int(dfden),
+                "p": pval, "significant": bool(pval < 0.05),
+            }
+
+        # unweighted sensitivity (naive means per group)
+        dfu = pd.DataFrame({"g": gv, "y": yv})
+        result["unweighted"] = {str(k): float(v) for k, v in dfu.groupby("g")["y"].mean().items()}
+
+        # design summary + Kish effective N
+        sw, sw2 = float(w.sum()), float((w ** 2).sum())
+        n_eff = (sw * sw / sw2) if sw2 > 0 else float(len(idx))
+        result["design"] = {
+            "n": int(len(idx)), "sum_w": sw, "n_eff": float(n_eff),
+            "deff_kish": float(len(idx) / n_eff) if n_eff > 0 else None,
+            "weights": state.design.get("weights"),
+            "strata": state.design.get("strata") or state.design.get("stratum"),
+            "psu": state.design.get("psu"), "df": df_dom,
+        }
+        table = pd.DataFrame(
+            [{"group": c["group"], "split": c["split"], "estimate": c["estimate"],
+              "ci_lo": c["ci_lo"], "ci_hi": c["ci_hi"], "n": c["n"]} for c in cells],
+            columns=["group", "split", "estimate", "ci_lo", "ci_hi", "n"],
+        )
+    except Exception as exc:  # graceful degrade — never crash on missing/odd input
+        result["error"] = f"survey_crosstab 未能完成:{exc}"
+
+    state.write("models", "survey_crosstab", result)
+    state.write("artifacts", "tables", table)
     return state
