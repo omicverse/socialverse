@@ -29,7 +29,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["build_corpus", "ocr_tei"]
+__all__ = ["build_corpus", "ocr_tei", "ocr_lines"]
 
 
 def _try_import(name: str) -> Any | None:
@@ -334,3 +334,166 @@ def _ocr_kwarg(pytesseract: Any, image: Any, lang: str) -> str:
         return str(pytesseract.image_to_string(image, lang=lang))
     except Exception:
         return _ocr_page(image, pytesseract)
+
+
+# ============================================================================
+# ocr_lines — the Manuscript tool's LOCAL OCR fast-lane. A multimodal vision LLM
+# can read a folio but is slow + costly; a small local OCR engine (RapidOCR /
+# PP-OCR, or PaddleOCR, else Tesseract) reads printed / modern-hand / Chinese
+# pages fast, free, offline, and — crucially — returns REAL per-line bounding
+# boxes, so each transcribed line anchors precisely to its spot on the image
+# (better than an LLM's estimated box). Confidence maps to a per-line status the
+# UI colors. Not for medieval hands / ancient scripts (out of distribution) —
+# there the Vision model or dedicated HTR wins; this is the common-case fast lane.
+# ============================================================================
+def _status_from_conf(conf: float) -> str:
+    if conf >= 0.85:
+        return "ok"
+    if conf >= 0.60:
+        return "uncertain"
+    return "uncertain"  # OCR never returns a blank/illegible line; low conf = uncertain
+
+
+def _rapidocr_lines(path: str) -> list[dict[str, Any]] | None:
+    """RapidOCR (ONNX PP-OCR): fast CPU OCR → per-line text + polygon + confidence."""
+    RapidOCR = None
+    for mod in ("rapidocr_onnxruntime", "rapidocr"):
+        m = _try_import(mod)
+        if m is not None and hasattr(m, "RapidOCR"):
+            RapidOCR = m.RapidOCR
+            break
+    if RapidOCR is None:
+        return None
+    try:
+        engine = RapidOCR()
+        result, _elapse = engine(path)
+    except Exception:
+        return None
+    lines: list[dict[str, Any]] = []
+    for i, item in enumerate(result or []):
+        box, text, conf = item[0], item[1], item[2]
+        xs = [float(p[0]) for p in box]; ys = [float(p[1]) for p in box]
+        c = float(conf)
+        lines.append({
+            "n": i + 1, "text": str(text).strip(),
+            "region": {"x": round(min(xs)), "y": round(min(ys)), "w": round(max(xs) - min(xs)), "h": round(max(ys) - min(ys))},
+            "conf": round(c, 3), "status": _status_from_conf(c),
+        })
+    return lines
+
+
+def _paddleocr_lines(path: str) -> list[dict[str, Any]] | None:
+    """Full PaddleOCR (paddlepaddle) if present — same shape as RapidOCR."""
+    m = _try_import("paddleocr")
+    if m is None or not hasattr(m, "PaddleOCR"):
+        return None
+    try:
+        engine = m.PaddleOCR(use_angle_cls=True, show_log=False)
+        result = engine.ocr(path, cls=True)
+    except Exception:
+        return None
+    rows = result[0] if (result and isinstance(result, list)) else result
+    lines: list[dict[str, Any]] = []
+    for i, item in enumerate(rows or []):
+        try:
+            box = item[0]; text, conf = item[1][0], float(item[1][1])
+        except Exception:
+            continue
+        xs = [float(p[0]) for p in box]; ys = [float(p[1]) for p in box]
+        lines.append({
+            "n": i + 1, "text": str(text).strip(),
+            "region": {"x": round(min(xs)), "y": round(min(ys)), "w": round(max(xs) - min(xs)), "h": round(max(ys) - min(ys))},
+            "conf": round(conf, 3), "status": _status_from_conf(conf),
+        })
+    return lines
+
+
+def _tesseract_lines(path: str) -> list[dict[str, Any]] | None:
+    """Tesseract line-level fallback (image_to_data grouped by line) with boxes."""
+    pt = _try_import("pytesseract")
+    PIL = _try_import("PIL.Image")
+    if pt is None or PIL is None:
+        return None
+    try:
+        from pytesseract import Output
+        img = PIL.open(path)
+        d = pt.image_to_data(img, output_type=Output.DICT)
+    except Exception:
+        return None
+    groups: dict[tuple, dict[str, Any]] = {}
+    n = len(d.get("text", []))
+    for i in range(n):
+        txt = str(d["text"][i]).strip()
+        conf = float(d["conf"][i]) if str(d["conf"][i]) not in ("-1", "") else -1.0
+        if not txt or conf < 0:
+            continue
+        key = (d["block_num"][i], d["par_num"][i], d["line_num"][i])
+        x, y, w, h = int(d["left"][i]), int(d["top"][i]), int(d["width"][i]), int(d["height"][i])
+        g = groups.setdefault(key, {"words": [], "confs": [], "x0": x, "y0": y, "x1": x + w, "y1": y + h})
+        g["words"].append(txt); g["confs"].append(conf / 100.0)
+        g["x0"] = min(g["x0"], x); g["y0"] = min(g["y0"], y); g["x1"] = max(g["x1"], x + w); g["y1"] = max(g["y1"], y + h)
+    lines: list[dict[str, Any]] = []
+    for i, (_k, g) in enumerate(sorted(groups.items())):
+        c = sum(g["confs"]) / len(g["confs"]) if g["confs"] else 0.0
+        lines.append({
+            "n": i + 1, "text": " ".join(g["words"]),
+            "region": {"x": g["x0"], "y": g["y0"], "w": g["x1"] - g["x0"], "h": g["y1"] - g["y0"]},
+            "conf": round(c, 3), "status": _status_from_conf(c),
+        })
+    return lines
+
+
+@register(
+    name="ocr_lines",
+    aliases=["ocr_transcribe", "本地OCR转写", "ocr行"],
+    category="prep",
+    tier="plus",
+    skill="ocr-tei-encoding",
+    languages=["Python"],
+    key_tools=["rapidocr", "paddleocr", "pytesseract"],
+    description="本地 OCR:图像→逐行文字+真实坐标框+置信度(RapidOCR/PaddleOCR/Tesseract,快/免费/离线)",
+    requires={},
+    produces={"models": ["ocr_lines"]},
+    auto_fix="escalate",
+)
+def ocr_lines(state: StudyState, **kwargs: Any) -> StudyState:
+    """Local OCR of one page image into anchored lines for the Manuscript tool.
+
+    Reads ``image=`` (a path) and returns, per detected line, the text, its
+    bounding box in image-pixel coords, a confidence, and a status the UI colors.
+    Tries RapidOCR (ONNX PP-OCR, fast CPU) → PaddleOCR → Tesseract; if no engine
+    is present, returns an ``error`` with an install hint (never raises).
+    """
+    result: dict[str, Any] = {"backend": None}
+    try:
+        path = kwargs.get("image") or kwargs.get("path") or kwargs.get("scan")
+        if not path:
+            result["error"] = "ocr_lines 需要 image=<图片路径>"
+            state.write("models", "ocr_lines", result); return state
+        engines = [("rapidocr", _rapidocr_lines), ("paddleocr", _paddleocr_lines), ("tesseract", _tesseract_lines)]
+        lines = None; backend = None
+        for name, fn in engines:
+            lines = fn(str(path))
+            if lines is not None:
+                backend = name; break
+        if lines is None:
+            result["error"] = "未找到本地 OCR 引擎 —— 请安装 rapidocr-onnxruntime(推荐)或 paddleocr 或 pytesseract"
+            state.write("models", "ocr_lines", result); return state
+        # image size (best-effort, for the tool's coordinate frame)
+        w = h = None
+        PIL = _try_import("PIL.Image")
+        if PIL is not None:
+            try:
+                im = PIL.open(str(path)); w, h = int(im.size[0]), int(im.size[1])
+            except Exception:
+                pass
+        result.update({
+            "backend": backend, "engine": backend,
+            "n_lines": len(lines), "lines": lines,
+            "img_w": w, "img_h": h,
+            "note": f"本地 OCR({backend}):{len(lines)} 行,含真实坐标框;置信度低的标 uncertain,请核对",
+        })
+    except Exception as exc:
+        result["error"] = f"ocr_lines 未能完成:{exc}"
+    state.write("models", "ocr_lines", result)
+    return state
