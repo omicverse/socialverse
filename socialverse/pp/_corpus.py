@@ -8,9 +8,12 @@ tool (dfm construction, topic models, quote-tracing) speaks in:
 * :func:`build_corpus` — Unicode-normalize raw texts (NFC) and segment them into
   addressable coding **units** carrying stable ``unit_id`` + character offsets,
   plus a ``manifest`` DataFrame and a provenance record of the segmentation.
-* :func:`ocr_tei` — layout-aware OCR of page scans (via Tesseract when
-  available, otherwise accepting text already present) encoded into a minimal
-  **TEI-P5** skeleton written to both ``corpus['tei']`` and ``artifacts['xml']``.
+* :func:`ocr_tei` — OCR of page scans (via **Tesseract** when available,
+  otherwise accepting text already present) encoded into a minimal **TEI-P5**
+  skeleton written to both ``corpus['tei']`` and ``artifacts['xml']``. Tesseract
+  is the *only* engine wired in; Kraken / eScriptorium HTR is an external step —
+  run it yourself and feed the transcript back as text (see the
+  ``ocr-tei-encoding`` skill for that methodology).
 
 Heavy / optional dependencies (``pytesseract`` + Pillow for OCR) are imported
 lazily and degrade gracefully — the module never imports them at load time and
@@ -237,13 +240,21 @@ def _as_scan_map(scans: Any) -> dict[str, Any]:
     skill="ocr-tei-encoding",
     languages=["Python", "XML(TEI)"],
     key_tools=["pytesseract", "Tesseract", "TEI-P5"],
-    description="版面感知 OCR 扫描件(缺引擎则接受已有文本)并编码为 TEI-P5 骨架",
+    description="用 Tesseract OCR 扫描件(缺引擎则接受已有纯文本)并编码为 TEI-P5 骨架;仅 Tesseract,Kraken/HTR 需外部转写后回喂文本",
     requires={"sources": ["scans"]},
     produces={"corpus": ["documents", "tei"], "artifacts": ["xml"], "evidence": ["provenance"]},
     auto_fix="auto",
 )
 def ocr_tei(state: StudyState, **kwargs: Any) -> StudyState:
-    """OCR page scans (when Tesseract is present) and encode them as TEI-P5.
+    """OCR page scans with **Tesseract** (when present) and encode them as TEI-P5.
+
+    Tesseract is the *only* engine implemented here. Pages already given as text
+    are used verbatim; image pages are OCR'd if ``pytesseract`` + Pillow import,
+    else they degrade to text-passthrough. There is **no** Kraken / HTR path — for
+    manuscript hands run an external HTR tool (e.g. eScriptorium) and feed the
+    transcript back in as text. An ``engine=`` naming anything other than
+    Tesseract is **not executed**; it is only recorded in ``provenance`` (as
+    ``requested_engine`` + a ``note``) so the fallback is auditable, never silent.
 
     Parameters (via ``kwargs``)
     ---------------------------
@@ -252,12 +263,18 @@ def ocr_tei(state: StudyState, **kwargs: Any) -> StudyState:
         string (used verbatim) or an image (path / PIL image, OCR'd if possible).
     lang : str, default 'eng'
         Tesseract language code, when OCR is used.
+    engine : str, optional
+        Recorded for provenance only. Tesseract is the sole implemented engine;
+        any other value (e.g. ``"kraken"``) is noted in provenance, not run.
     titles : dict, optional
         ``{doc_id: title}`` used for the TEI ``<title>`` element.
     """
     scans = kwargs.get("data", state.sources.get("scans"))
     lang = str(kwargs.get("lang", "eng"))
     titles = kwargs.get("titles") or {}
+    # Tesseract is the only implemented engine. Capture any requested engine so a
+    # caller asking for e.g. "kraken" gets an auditable note, not a silent swap.
+    requested_engine = str(kwargs.get("engine", "")).strip().lower()
 
     pytesseract = _try_import("pytesseract")
     PIL = _try_import("PIL.Image")
@@ -301,17 +318,24 @@ def ocr_tei(state: StudyState, **kwargs: Any) -> StudyState:
     state.write("corpus", "documents", documents)
     state.write("corpus", "tei", tei_map)
     state.write("artifacts", "xml", xml_map)
-    state.write(
-        "evidence",
-        "provenance",
-        {
-            "step": "ocr_tei",
-            "engine": "tesseract" if (engine_ok and ocr_used) else "text-passthrough",
-            "ocr_available": engine_ok,
-            "lang": lang,
-            "n_documents": len(documents),
-        },
-    )
+
+    engine_used = "tesseract" if (engine_ok and ocr_used) else "text-passthrough"
+    provenance: dict[str, Any] = {
+        "step": "ocr_tei",
+        "engine": engine_used,
+        "ocr_available": engine_ok,
+        "lang": lang,
+        "n_documents": len(documents),
+    }
+    # Honest fallback: an engine other than Tesseract is not implemented here.
+    if requested_engine and requested_engine not in {"tesseract", "text", "text-passthrough", "auto"}:
+        provenance["requested_engine"] = requested_engine
+        provenance["note"] = (
+            f"engine={requested_engine!r} is not implemented by sv.pp.ocr_tei "
+            f"(Tesseract-only); used '{engine_used}'. For Kraken/HTR transcribe "
+            f"externally (e.g. eScriptorium) and feed the transcript back as text."
+        )
+    state.write("evidence", "provenance", provenance)
     return state
 
 
