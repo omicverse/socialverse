@@ -65,7 +65,7 @@ suppress_warnings = ["myst.header", "myst.xref_missing"]
 # -- HTML output --------------------------------------------------------------
 html_theme = "sphinx_book_theme"
 html_title = "socialverse"
-html_logo = "_static/logo.svg"
+html_logo = "_static/socialverse_logo.png"
 html_favicon = "_static/favicon.svg"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css"]
@@ -87,8 +87,8 @@ html_theme_options = {
     "show_toc_level": 2,
     "navigation_with_keys": False,
     "announcement": (
-        "socialverse — R-package parity for computational social science, "
-        "built on pure numpy / scipy."
+        "socialverse — the AI-era entry point for social science research, "
+        "from data to paper."
     ),
     "icon_links": [
         {
