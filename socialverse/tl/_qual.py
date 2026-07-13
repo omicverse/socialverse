@@ -39,7 +39,7 @@ import pandas as pd
 from .._registry import register
 from .._state import StudyState
 
-__all__ = ["code_themes", "trace_quotes", "reflexive_memo", "code_analysis", "coding_reliability"]
+__all__ = ["code_themes", "trace_quotes", "reflexive_memo", "code_analysis", "coding_reliability", "code_by_attribute"]
 
 
 def _try_import(name: str) -> Any | None:
@@ -759,6 +759,126 @@ def coding_reliability(state: StudyState, **kwargs: Any) -> StudyState:
     ir["n_disagreements"] = len(disagreements)
     state.write("diagnostics", "interrater", ir)
     state.write("diagnostics", "coding_disagreements", disagreements[:200])
+    return state
+
+
+# --------------------------------------------------- framework analysis (code × attribute)
+@register(
+    name="code_by_attribute",
+    aliases=["按属性比较", "code_attribute_crosstab", "framework_matrix"],
+    category="qual",
+    tier="plus",
+    skill="qualitative-coding",
+    languages=["Python"],
+    key_tools=["pandas", "numpy", "scipy"],
+    description="按文档属性分组比较编码(框架分析):code×属性组的段数矩阵 + 文档存在矩阵 + 逐编码卡方/Fisher 关联检验",
+    requires={},
+    produces={"diagnostics": ["code_attribute"], "artifacts": ["tables"]},
+    auto_fix="none",
+)
+def code_by_attribute(state: StudyState, **kwargs: Any) -> StudyState:
+    """Compare coding across document GROUPS defined by an attribute (framework analysis).
+
+    The standard way qualitative research compares themes across cases/groups — a
+    "matrix query" (NVivo) / framework-analysis matrix. Given segments ``{doc_id, code}``,
+    per-document attributes, and a chosen ``attribute``, it groups the documents by that
+    attribute's value and computes:
+
+      * a code × group **segment-count** matrix;
+      * a code × group **document-presence** matrix (# documents in the group that carry
+        the code) and its proportion (presence / documents-in-group);
+      * a per-code **association test** — a 2×k table (has-code vs not, across the k
+        groups) → chi-square (or Fisher's exact for a small 2×2) → p-value, i.e. does the
+        code's presence differ by the attribute.
+
+    This is content-analysis / framework analysis (descriptive + a test of association),
+    NOT a causal claim.
+
+    kwargs
+    ------
+    codings : list ``[{doc_id, code}, ...]`` (falls back to ``codes['segments']``).
+    documents : dict ``{doc_id: text}`` — defines the document universe.
+    doc_attributes : dict ``{doc_id: {attr_name: value}}``.
+    attribute : str — the attribute name to group/compare on.
+    """
+    import numpy as np
+
+    codings = kwargs.get("codings") or (state.codes.get("segments") or [])
+    documents = kwargs.get("documents") or state.corpus.get("documents") or {}
+    doc_attrs = kwargs.get("doc_attributes") or {}
+    attribute = kwargs.get("attribute")
+    if not attribute:
+        state.write("diagnostics", "code_attribute", {"error": "缺少 attribute(要比较的文档属性名)"})
+        return state
+
+    UNSET = "(未标)"
+    doc_ids = list(documents.keys()) or sorted({str(c.get("doc_id")) for c in codings if c.get("doc_id") is not None})
+
+    def gval(did: str) -> str:
+        v = (doc_attrs.get(did) or {}).get(attribute)
+        return str(v) if v not in (None, "") else UNSET
+
+    groups: dict[str, list[str]] = {}
+    for did in doc_ids:
+        groups.setdefault(gval(str(did)), []).append(str(did))
+    group_names = sorted(groups.keys())
+    docs_in_group = {g: len(groups[g]) for g in group_names}
+
+    codes = sorted({str(c.get("code")) for c in codings if c.get("code")})
+    seg_count = {c: {g: 0 for g in group_names} for c in codes}
+    doc_has: dict[tuple[str, str], bool] = {}
+    for c in codings:
+        code = str(c.get("code", "")).strip()
+        did = str(c.get("doc_id", ""))
+        if not code:
+            continue
+        g = gval(did)
+        if code in seg_count and g in seg_count[code]:
+            seg_count[code][g] += 1
+            doc_has[(code, did)] = True
+
+    presence = {c: {g: sum(1 for d in groups[g] if doc_has.get((c, d))) for g in group_names} for c in codes}
+
+    count_df = pd.DataFrame([{"code": c, **{g: seg_count[c][g] for g in group_names}} for c in codes])
+    pres_df = pd.DataFrame([{"code": c, **{g: presence[c][g] for g in group_names}} for c in codes])
+
+    stats = _try_import("scipy.stats")
+    per_code = []
+    for c in codes:
+        has = [presence[c][g] for g in group_names]
+        nothas = [docs_in_group[g] - presence[c][g] for g in group_names]
+        table = np.array([has, nothas])
+        p = stat = test = None
+        try:
+            if stats is not None and table.shape[1] >= 2 and table.min() >= 0 and table.sum() > 0:
+                if table.shape[1] == 2 and int(table.sum()) < 40:
+                    _, p = stats.fisher_exact(table); test = "fisher"
+                else:
+                    stat, p, _dof, _ = stats.chi2_contingency(table); test = "chi2"
+        except Exception:
+            pass
+        per_code.append({
+            "code": c,
+            "presence": {g: presence[c][g] for g in group_names},
+            "prop": {g: (round(presence[c][g] / docs_in_group[g], 3) if docs_in_group[g] else 0.0) for g in group_names},
+            "test": test,
+            "p": (float(p) if p is not None else None),
+            "stat": (float(stat) if stat is not None else None),
+        })
+    # rank most group-discriminating codes first (smallest p)
+    per_code.sort(key=lambda r: (r["p"] if r["p"] is not None else 1.0))
+
+    result = {
+        "attribute": attribute,
+        "groups": group_names,
+        "docs_in_group": docs_in_group,
+        "n_documents": len(doc_ids),
+        "count_matrix": count_df.to_dict("records"),
+        "doc_presence": pres_df.to_dict("records"),
+        "per_code": per_code,
+    }
+    state.write("diagnostics", "code_attribute", result)
+    state.write("artifacts", "tables", {"code_attribute_count": count_df, "code_attribute_presence": pres_df})
     return state
 
 
