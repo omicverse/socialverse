@@ -31,14 +31,17 @@ jobs:
       - name: Install docs dependencies
         run: pip install -r docs/requirements.txt
 
-      - name: Build the Sphinx site
+      - name: Build the English site (root)
         # notebooks render from committed outputs (nb_execution_mode="off")
-        run: sphinx-build -b html -j auto docs docs/_build/html
+        run: sphinx-build -b html -j auto docs site
+
+      - name: Build the Chinese site (/zh/)
+        run: sphinx-build -b html -j auto docs_zh site/zh
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/_build/html
+          path: site
 
   deploy:
     # only publish from the default branch; PRs get the build check above

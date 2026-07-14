@@ -1,14 +1,16 @@
-# Configuration file for the socialverse documentation (Sphinx + sphinx-book-theme).
-# Mirrors the omicverse readthedocs setup: MyST-Markdown sources, the Jupyter-Book
-# style sphinx_book_theme, copy buttons, and repository / download / fullscreen
-# toolbar buttons.
+# Configuration file for the socialverse documentation — Simplified Chinese tree.
+# Mirrors ../docs/conf.py (the English tree); kept as a separate Sphinx project so the
+# two languages build independently and can be combined into one Pages artifact
+# (English at the site root, Chinese under /zh/). Static assets (logo, css, favicon)
+# and the notebooks directory are symlinked back to a single source of truth.
 
 # -- Project information ------------------------------------------------------
 project = "socialverse"
 copyright = "2025-2026, socialverse contributors"
 author = "OmicVerse / socialverse contributors"
-release = "0.7.2"
-version = "0.7.2"
+release = "0.7.7"
+version = "0.7.7"
+language = "zh_CN"
 
 # -- General configuration ----------------------------------------------------
 extensions = [
@@ -49,11 +51,7 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    # legacy dev docs that live in docs/ but are not part of the RTD site
-    "CONTRACT_CARDS.md",
-    "LANDSCAPE.md",
-    "README-full.md",
-    # the notebooks/ dir is symlinked in; its README is not a doc page
+    # the notebooks/ dir is symlinked in (native Chinese source); its README is not a doc page
     "tutorials/notebooks/README.md",
     "tutorials/notebooks/**/*.py",
 ]
@@ -71,10 +69,8 @@ html_css_files = ["css/custom.css"]
 html_show_sourcelink = False
 
 html_theme_options = {
-    # Real logo (vectorized from the project's actual mark), with a
-    # separately-recolored dark variant — pydata-sphinx-theme swaps between
-    # them on the light/dark toggle, so no background hack is needed to keep
-    # the navy artwork legible on the dark sidebar.
+    # Same real logo as the English tree (shared via the _static symlink), light/dark
+    # variants swapped automatically by the theme — no background hack needed.
     "logo": {
         "image_light": "_static/socialverse_logo.svg",
         "image_dark": "_static/socialverse_logo_dark.svg",
@@ -82,7 +78,7 @@ html_theme_options = {
     # repository toolbar (github / edit / issues) — like omicverse
     "repository_url": "https://github.com/omicverse/socialverse",
     "repository_branch": "main",
-    "path_to_docs": "docs",
+    "path_to_docs": "docs_zh",
     "use_repository_button": True,
     "use_issues_button": True,
     "use_edit_page_button": True,
@@ -94,13 +90,12 @@ html_theme_options = {
     "show_toc_level": 2,
     "navigation_with_keys": False,
     "announcement": (
-        "socialverse — the AI-era entry point for social science research, "
-        "from data to paper."
+        "socialverse —— AI 时代社会科学研究的入口,从数据到论文。"
     ),
     "icon_links": [
         {
-            "name": "中文",
-            "url": "zh/index.html",
+            "name": "English",
+            "url": "https://omicverse.github.io/socialverse/",
             "icon": "fa-solid fa-language",
             "type": "fontawesome",
         },
